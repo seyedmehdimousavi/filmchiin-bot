@@ -122,6 +122,11 @@ bot.catch((err, ctx) => {
   console.error("BOT ERROR for update type", ctx.updateType, ":", err);
 });
 
+
+bot.on("message", (ctx) => {
+  console.log("chat id:", ctx.chat.id);
+});
+
 // -----------------------------
 // 6) Launch bot
 // -----------------------------
