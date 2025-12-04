@@ -19,78 +19,128 @@ const bot = new Telegraf(BOT_TOKEN);
 
 console.log("Bot starting...");
 
-// -----------------------------
-// 3) /start handler (forward messages)
-// -----------------------------
+// =======================================================================
+// 3) /start handler (supports: private channel + group topic forwarding)
+// =======================================================================
+
 bot.start(async (ctx) => {
   const payload = ctx.startPayload || "";
   console.log("START from", ctx.from.id, "payload:", payload);
 
   if (!payload) {
     return ctx.reply(
-      "Hi!\nPlease open movies from inside FilmChiin website Go to file button."
+      "Hi!\nPlease open movies using Go to file button inside FilmChiin website."
     );
   }
 
-  // payload باید شکل forward_x_y باشد
+  // همه payload ها باید با forward_ شروع شوند
   if (!payload.startsWith("forward_")) {
     return ctx.reply("Invalid movie link.");
   }
 
   try {
     const parts = payload.split("_");
-    if (parts.length < 3) {
-      return ctx.reply("Invalid movie code.");
+
+    // حالا payload های ما دو مدل هستند:
+    // forward_<internalId>_<messageId>
+    // forward_<username>_<topicId>_<messageId>
+
+    if (parts.length === 3) {
+      // ----------------------------------------------------
+      // حالت 1: کانال خصوصی
+      // forward_2195618604_403
+      // → channelId = -1002195618604
+      // ----------------------------------------------------
+      const internalId = parts[1];
+      const messageId = Number(parts[2]);
+
+      if (!/^[0-9]+$/.test(internalId)) {
+        return ctx.reply("Invalid channel ID.");
+      }
+
+      const channelId = `-100${internalId}`;
+      console.log("Forwarding PRIVATE CHANNEL →", channelId, "msg:", messageId);
+
+      const forwarded = await ctx.telegram.forwardMessage(
+        ctx.chat.id,
+        channelId,
+        messageId
+      );
+
+      const media =
+        forwarded.video ||
+        forwarded.document ||
+        forwarded.animation ||
+        forwarded.audio ||
+        forwarded.voice ||
+        null;
+
+      if (!media) return ctx.reply("This post has no video/file.");
+
+      return;
     }
 
-    const target = parts[1]; // internalId یا username
-    const messageId = Number(parts[2]);
+    // ----------------------------------------------------
+    // حالت 2: گروه / تاپیک
+    // forward_YouCantSeeThisLink_2_10
+    // target = username
+    // topicId = 2
+    // messageId = 10
+    // ----------------------------------------------------
 
-    if (!messageId) {
-      return ctx.reply("Invalid message code.");
+    if (parts.length === 4) {
+      const username = parts[1]; // نام گروه public
+      const topicId = Number(parts[2]);
+      const messageId = Number(parts[3]);
+
+      if (!username || isNaN(topicId) || isNaN(messageId)) {
+        return ctx.reply("Invalid topic link.");
+      }
+
+      const groupChat = `@${username}`;
+
+      console.log(
+        "Forwarding GROUP TOPIC →",
+        groupChat,
+        "topic:",
+        topicId,
+        "msg:",
+        messageId
+      );
+
+      const forwarded = await ctx.telegram.forwardMessage(
+        ctx.chat.id,
+        groupChat,
+        messageId,
+        {
+          message_thread_id: topicId,
+        }
+      );
+
+      const media =
+        forwarded.video ||
+        forwarded.document ||
+        forwarded.animation ||
+        forwarded.audio ||
+        forwarded.voice ||
+        null;
+
+      if (!media) return ctx.reply("This topic post has no video/file.");
+
+      return;
     }
 
-    let sourceChat;
-
-    // اگر target فقط عدد بود → private channel
-    if (/^[0-9]+$/.test(target)) {
-      sourceChat = `-100${target}`;
-      console.log("Source is PRIVATE CHANNEL:", sourceChat);
-    } else {
-      // اگر متن بود → username group/channel
-      sourceChat = `@${target}`;
-      console.log("Source is PUBLIC GROUP/CHANNEL:", sourceChat);
-    }
-
-    // فوروارد پیام
-    const forwarded = await ctx.telegram.forwardMessage(
-      ctx.chat.id,
-      sourceChat,
-      messageId
-    );
-
-    const media =
-      forwarded.video ||
-      forwarded.document ||
-      forwarded.animation ||
-      forwarded.audio ||
-      forwarded.voice ||
-      null;
-
-    if (!media) {
-      return ctx.reply("This post does not contain a video or file.");
-    }
-
-    return;
+    return ctx.reply("Invalid movie code.");
   } catch (err) {
     console.error("Forward error:", err);
     return ctx.reply("Error forwarding the movie. Please try again.");
   }
 });
 
-// -----------------------------
+// =======================================================================
 // 4) Media ID Debug (Optional)
-// -----------------------------
+// =======================================================================
+
 bot.on("video", async (ctx) => {
   try {
     const fileId = ctx.message.video.file_id;
@@ -115,21 +165,16 @@ bot.on("document", async (ctx) => {
   }
 });
 
-// -----------------------------
-// 5) Global error handling
-// -----------------------------
-bot.catch((err, ctx) => {
-  console.error("BOT ERROR for update type", ctx.updateType, ":", err);
-});
-
-
+// =======================================================================
+// 5) Message Log
+// =======================================================================
 bot.on("message", (ctx) => {
   console.log("chat id:", ctx.chat.id);
 });
 
-// -----------------------------
+// =======================================================================
 // 6) Launch bot
-// -----------------------------
+// =======================================================================
 bot.launch().then(() => {
   console.log("FilmChiin Telegram Bot is running...");
 });
