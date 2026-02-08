@@ -1,128 +1,29 @@
-// bot.js
 require("dotenv").config();
 const { Telegraf } = require("telegraf");
+const { createClient } = require("@supabase/supabase-js");
 
-// -----------------------------
-// 1) Load BOT TOKEN
-// -----------------------------
+// ===================================================
+// Init bot
+// ===================================================
 const BOT_TOKEN = process.env.BOT_TOKEN;
-
 if (!BOT_TOKEN) {
-  console.error("ERROR: BOT_TOKEN not found in .env");
+  console.error("BOT_TOKEN missing");
   process.exit(1);
 }
 
 const bot = new Telegraf(BOT_TOKEN);
-console.log("Bot starting...");
 
-// =======================================================================
-// /start handler — supports 3 payload formats:
-// 1) forward_<internalId>_<messageId>
-// 2) forward_<username>_<messageId>
-// 3) forward_<username>_<topicId>_<messageId>
-// =======================================================================
+// ===================================================
+// Supabase (single instance)
+// ===================================================
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY,
+);
 
-bot.start(async (ctx) => {
-  const payload = ctx.startPayload || "";
-  console.log("START from", ctx.from.id, "payload:", payload);
-
-  if (!payload.startsWith("forward_")) {
-    return ctx.reply("Invalid movie link.");
-  }
-
-  const parts = payload.split("_");
-
-  try {
-    // ----------------------------------------------------
-    // 1) PRIVATE CHANNEL
-    // forward_2195618604_403
-    // ----------------------------------------------------
-    if (parts.length === 3 && /^[0-9]+$/.test(parts[1])) {
-      const internalId = parts[1];
-      const messageId = Number(parts[2]);
-
-      const channelId = `-100${internalId}`;
-      console.log("Forward PRIVATE CHANNEL:", channelId, "msg:", messageId);
-
-      const forwarded = await ctx.telegram.forwardMessage(
-        ctx.chat.id,
-        channelId,
-        messageId
-      );
-
-      if (!containsMedia(forwarded))
-        return ctx.reply("This post has no video/file.");
-
-      return;
-    }
-
-    // ----------------------------------------------------
-    // 2) PUBLIC GROUP — normal message
-    // forward_YouCantSeeThisLink_215
-    // ----------------------------------------------------
-    if (parts.length === 3 && !/^[0-9]+$/.test(parts[1])) {
-      const username = parts[1];
-      const messageId = Number(parts[2]);
-
-      const chat = `@${username}`;
-      console.log("Forward GROUP:", chat, "msg:", messageId);
-
-      const forwarded = await ctx.telegram.forwardMessage(
-        ctx.chat.id,
-        chat,
-        messageId
-      );
-
-      if (!containsMedia(forwarded))
-        return ctx.reply("This group message has no video/file.");
-
-      return;
-    }
-
-    // ----------------------------------------------------
-    // 3) PUBLIC GROUP — topic message
-    // forward_YouCantSeeThisLink_2_10
-    // ----------------------------------------------------
-    if (parts.length === 4) {
-      const username = parts[1];
-      const topicId = Number(parts[2]);
-      const messageId = Number(parts[3]);
-
-      const chat = `@${username}`;
-      console.log(
-        "Forward GROUP TOPIC:",
-        chat,
-        "topic:",
-        topicId,
-        "msg:",
-        messageId
-      );
-
-      const forwarded = await ctx.telegram.forwardMessage(
-        ctx.chat.id,
-        chat,
-        messageId,
-        {
-          message_thread_id: topicId,
-        }
-      );
-
-      if (!containsMedia(forwarded))
-        return ctx.reply("This topic message has no video/file.");
-
-      return;
-    }
-
-    return ctx.reply("Invalid movie link format.");
-  } catch (err) {
-    console.error("Forward error:", err);
-    return ctx.reply("Error forwarding the movie. Please try again.");
-  }
-});
-
-// =======================================================
-// Media detector
-// =======================================================
+// ===================================================
+// Helpers
+// ===================================================
 function containsMedia(msg) {
   return (
     msg.video ||
@@ -134,14 +35,200 @@ function containsMedia(msg) {
   );
 }
 
-// Debug logs
-bot.on("message", (ctx) => {
-  console.log("chat id:", ctx.chat.id);
+// ===================================================
+// /start handler (SUPPORTS BOTH OLD + NEW)
+// ===================================================
+bot.start(async (ctx) => {
+  const payload = ctx.startPayload || "";
+  console.log("START payload:", payload);
+
+  try {
+    // =================================================
+    // OLD SYSTEM — forward_...
+    // =================================================
+    if (payload.startsWith("forward_")) {
+      const parts = payload.split("_");
+
+      // private channel
+      if (parts.length === 3 && /^[0-9]+$/.test(parts[1])) {
+        const channelId = `-100${parts[1]}`;
+        const messageId = Number(parts[2]);
+
+        const forwarded = await ctx.telegram.forwardMessage(
+          ctx.chat.id,
+          channelId,
+          messageId,
+        );
+
+        if (!containsMedia(forwarded)) {
+          return ctx.reply("This post has no media.");
+        }
+        return;
+      }
+
+      // public group
+      if (parts.length === 3) {
+        const chat = `@${parts[1]}`;
+        const messageId = Number(parts[2]);
+
+        const forwarded = await ctx.telegram.forwardMessage(
+          ctx.chat.id,
+          chat,
+          messageId,
+        );
+
+        if (!containsMedia(forwarded)) {
+          return ctx.reply("This message has no media.");
+        }
+        return;
+      }
+
+      // topic
+      if (parts.length === 4) {
+        const chat = `@${parts[1]}`;
+        const topicId = Number(parts[2]);
+        const messageId = Number(parts[3]);
+
+        const forwarded = await ctx.telegram.forwardMessage(
+          ctx.chat.id,
+          chat,
+          messageId,
+          { message_thread_id: topicId },
+        );
+
+        if (!containsMedia(forwarded)) {
+          return ctx.reply("This topic message has no media.");
+        }
+        return;
+      }
+
+      return ctx.reply("Invalid movie link.");
+    }
+
+    // =================================================
+    // NEW SYSTEM — MOVIE_<uuid>
+    // =================================================
+    if (payload.startsWith("MOVIE_")) {
+      const movieId = payload.replace("MOVIE_", "").trim();
+
+      const { data, error } = await supabase
+        .from("movies")
+        .select("title, cover, link")
+        .eq("id", movieId)
+        .single();
+
+      if (error || !data) {
+        console.error("MOVIE LOAD ERROR:", error);
+        return ctx.reply("❌ فیلم پیدا نشد");
+      }
+
+      return ctx.replyWithPhoto(data.cover, {
+        caption: `🎬 ${data.title}`,
+        reply_markup: {
+          inline_keyboard: [[{ text: "▶️ Go to file", url: data.link }]],
+        },
+      });
+    }
+
+    // =================================================
+    // NO PAYLOAD
+    // =================================================
+    return ctx.reply("🎬 نام فیلم را ارسال کنید");
+  } catch (err) {
+    console.error("START ERROR:", err);
+    ctx.reply("❌ خطا در دریافت فیلم");
+  }
 });
 
-bot.launch().then(() => {
-  console.log("FilmChiin Telegram Bot is running...");
+// ===================================================
+// TEXT SEARCH (send movie name)
+// ===================================================
+bot.on("text", async (ctx) => {
+  const text = ctx.message.text.trim();
+  if (text.startsWith("/")) return;
+
+  try {
+    const { data, error } = await supabase
+      .from("movies")
+      .select("id, title, cover")
+      .ilike("title", `%${text}%`)
+      .limit(5);
+
+    if (error) {
+      console.error("TEXT SEARCH DB ERROR:", error);
+      return ctx.reply("❌ خطا در جستجو");
+    }
+
+    if (!data || data.length === 0) {
+      return ctx.reply("❌ فیلمی پیدا نشد");
+    }
+
+    for (const movie of data) {
+      await ctx.replyWithPhoto(movie.cover, {
+        caption: `🎬 ${movie.title}`,
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: "▶️ Go to file",
+                url: `https://t.me/${ctx.me}?start=MOVIE_${movie.id}`,
+              },
+            ],
+          ],
+        },
+      });
+    }
+  } catch (err) {
+    console.error("TEXT SEARCH ERROR:", err);
+    ctx.reply("❌ خطای غیرمنتظره");
+  }
 });
+
+// ===================================================
+// INLINE QUERY (kept for later)
+// ===================================================
+bot.on("inline_query", async (ctx) => {
+  try {
+    const q = ctx.inlineQuery.query.trim();
+    if (q.length < 2) {
+      return ctx.answerInlineQuery([], { cache_time: 1 });
+    }
+
+    const { data } = await supabase
+      .from("movies")
+      .select("id, title, cover")
+      .ilike("title", `%${q}%`)
+      .limit(10);
+
+    const results = (data || []).map((m) => ({
+      type: "article",
+      id: m.id,
+      title: m.title,
+      thumb_url: m.cover,
+      input_message_content: {
+        message_text: `🎬 ${m.title}`,
+      },
+      reply_markup: {
+        inline_keyboard: [
+          [
+            {
+              text: "▶️ Go to file",
+              url: `https://t.me/${ctx.me}?start=MOVIE_${m.id}`,
+            },
+          ],
+        ],
+      },
+    }));
+
+    await ctx.answerInlineQuery(results, { cache_time: 1 });
+  } catch (e) {
+    console.error("INLINE ERROR:", e);
+  }
+});
+
+// ===================================================
+console.log("FILMCHIIN BOT IS RUNNING...");
+bot.launch();
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
