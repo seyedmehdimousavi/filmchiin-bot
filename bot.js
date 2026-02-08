@@ -36,9 +36,9 @@ function containsMedia(msg) {
 }
 
 /**
- * دقیقا همان منطق سایت:
+ * mirror منطق سایت:
  * buildTelegramBotUrlFromChannelLink
- * ولی اینجا payload را برمی‌گردانیم
+ * خروجی: payload مثل forward_xxx_yyy
  */
 function buildForwardPayloadFromChannelLink(rawLink) {
   const trimmed = (rawLink || "").trim();
@@ -58,47 +58,29 @@ function buildForwardPayloadFromChannelLink(rawLink) {
   }
 
   const host = url.hostname.toLowerCase();
-  if (host !== "t.me" && host !== "telegram.me") {
-    return null;
-  }
+  if (host !== "t.me" && host !== "telegram.me") return null;
 
   const parts = url.pathname.split("/").filter(Boolean);
   if (parts.length === 0) return null;
 
-  // ---------------------------------------------
-  // 1) کانال خصوصی: /c/2195618604/403
-  // ---------------------------------------------
+  // 1) private channel: /c/2195618604/403
   if (parts[0] === "c" && parts.length >= 3) {
-    const internalId = parts[1];
-    const messageId = parts[2];
-
-    if (/^[0-9]+$/.test(internalId) && /^[0-9]+$/.test(messageId)) {
-      return `forward_${internalId}_${messageId}`;
+    if (/^\d+$/.test(parts[1]) && /^\d+$/.test(parts[2])) {
+      return `forward_${parts[1]}_${parts[2]}`;
     }
   }
 
-  // ---------------------------------------------
-  // 2) گروه / کانال عمومی: /username/403
-  // ---------------------------------------------
+  // 2) public group/channel: /username/403
   if (parts.length === 2) {
-    const username = parts[0];
-    const messageId = parts[1];
-
-    if (/^[A-Za-z0-9_]+$/.test(username) && /^[0-9]+$/.test(messageId)) {
-      return `forward_${username}_${messageId}`;
+    if (/^[A-Za-z0-9_]+$/.test(parts[0]) && /^\d+$/.test(parts[1])) {
+      return `forward_${parts[0]}_${parts[1]}`;
     }
   }
 
-  // ---------------------------------------------
-  // 3) گروه تاپیک‌دار: /username/topicId/messageId
-  // topicId حذف می‌شود
-  // ---------------------------------------------
+  // 3) topic group: /username/topicId/messageId
   if (parts.length === 3) {
-    const username = parts[0];
-    const messageId = parts[2];
-
-    if (/^[A-Za-z0-9_]+$/.test(username) && /^[0-9]+$/.test(messageId)) {
-      return `forward_${username}_${messageId}`;
+    if (/^[A-Za-z0-9_]+$/.test(parts[0]) && /^\d+$/.test(parts[2])) {
+      return `forward_${parts[0]}_${parts[2]}`;
     }
   }
 
@@ -106,21 +88,21 @@ function buildForwardPayloadFromChannelLink(rawLink) {
 }
 
 // ===================================================
-// /start handler (SUPPORTS OLD + MOVIE_)
+// /start handler (forward_ + MOVIE_)
 // ===================================================
 bot.start(async (ctx) => {
   const payload = ctx.startPayload || "";
   console.log("START payload:", payload);
 
   try {
-    // =============================================
-    // OLD SYSTEM — forward_...
-    // =============================================
+    // ---------------------------------------------
+    // forward_...
+    // ---------------------------------------------
     if (payload.startsWith("forward_")) {
       const parts = payload.split("_");
 
       // private channel
-      if (parts.length === 3 && /^[0-9]+$/.test(parts[1])) {
+      if (parts.length === 3 && /^\d+$/.test(parts[1])) {
         const channelId = `-100${parts[1]}`;
         const messageId = Number(parts[2]);
 
@@ -175,9 +157,9 @@ bot.start(async (ctx) => {
       return ctx.reply("Invalid movie link.");
     }
 
-    // =============================================
-    // NEW SYSTEM — MOVIE_<uuid>
-    // =============================================
+    // ---------------------------------------------
+    // MOVIE_<uuid>
+    // ---------------------------------------------
     if (payload.startsWith("MOVIE_")) {
       const movieId = payload.replace("MOVIE_", "").trim();
 
@@ -196,7 +178,6 @@ bot.start(async (ctx) => {
         return ctx.reply("❌ لینک فایل نامعتبر است");
       }
 
-      // بازگشت مجدد به منطق forward_
       ctx.startPayload = forwardPayload;
       return bot.handleUpdate({
         ...ctx.update,
@@ -212,29 +193,60 @@ bot.start(async (ctx) => {
 });
 
 // ===================================================
-// TEXT SEARCH (send movie name)
+// TEXT SEARCH (movies + movie_items)
 // ===================================================
 bot.on("text", async (ctx) => {
   const text = ctx.message.text.trim();
   if (text.startsWith("/")) return;
 
   try {
-    const { data, error } = await supabase
+    // -------- movies --------
+    const { data: movies } = await supabase
       .from("movies")
       .select("id, title, cover, link")
       .ilike("title", `%${text}%`)
       .limit(5);
 
-    if (error || !data || data.length === 0) {
+    // -------- movie_items --------
+    const { data: items } = await supabase
+      .from("movie_items")
+      .select("id, title, cover, link, movie_id")
+      .ilike("title", `%${text}%`)
+      .limit(5);
+
+    if ((!movies || movies.length === 0) && (!items || items.length === 0)) {
       return ctx.reply("❌ فیلمی پیدا نشد");
     }
 
-    for (const movie of data) {
-      const payload = buildForwardPayloadFromChannelLink(movie.link);
+    // نتایج movies
+    for (const m of movies || []) {
+      const payload = buildForwardPayloadFromChannelLink(m.link);
       if (!payload) continue;
 
-      await ctx.replyWithPhoto(movie.cover, {
-        caption: `🎬 ${movie.title}`,
+      await ctx.replyWithPhoto(m.cover, {
+        caption: `🎬 ${m.title}`,
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: "▶️ Go to file",
+                url: `https://t.me/${ctx.me}?start=${payload}`,
+              },
+            ],
+          ],
+        },
+      });
+    }
+
+    // نتایج movie_items
+    for (const it of items || []) {
+      if (!it.link) continue;
+
+      const payload = buildForwardPayloadFromChannelLink(it.link);
+      if (!payload) continue;
+
+      await ctx.replyWithPhoto(it.cover || undefined, {
+        caption: `🎬 ${it.title}`,
         reply_markup: {
           inline_keyboard: [
             [
@@ -254,7 +266,7 @@ bot.on("text", async (ctx) => {
 });
 
 // ===================================================
-// INLINE QUERY
+// INLINE QUERY (movies + movie_items)
 // ===================================================
 bot.on("inline_query", async (ctx) => {
   try {
@@ -263,38 +275,71 @@ bot.on("inline_query", async (ctx) => {
       return ctx.answerInlineQuery([], { cache_time: 1 });
     }
 
-    const { data } = await supabase
+    const { data: movies } = await supabase
       .from("movies")
       .select("id, title, cover, link")
       .ilike("title", `%${q}%`)
-      .limit(10);
+      .limit(5);
 
-    const results = (data || [])
-      .map((m) => {
-        const payload = buildForwardPayloadFromChannelLink(m.link);
-        if (!payload) return null;
+    const { data: items } = await supabase
+      .from("movie_items")
+      .select("id, title, cover, link")
+      .ilike("title", `%${q}%`)
+      .limit(5);
 
-        return {
-          type: "article",
-          id: m.id,
-          title: m.title,
-          thumb_url: m.cover,
-          input_message_content: {
-            message_text: `🎬 ${m.title}`,
-          },
-          reply_markup: {
-            inline_keyboard: [
-              [
-                {
-                  text: "▶️ Go to file",
-                  url: `https://t.me/${ctx.me}?start=${payload}`,
-                },
-              ],
+    const results = [];
+
+    for (const m of movies || []) {
+      const payload = buildForwardPayloadFromChannelLink(m.link);
+      if (!payload) continue;
+
+      results.push({
+        type: "article",
+        id: `movie_${m.id}`,
+        title: m.title,
+        thumb_url: m.cover,
+        input_message_content: {
+          message_text: `🎬 ${m.title}`,
+        },
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: "▶️ Go to file",
+                url: `https://t.me/${ctx.me}?start=${payload}`,
+              },
             ],
-          },
-        };
-      })
-      .filter(Boolean);
+          ],
+        },
+      });
+    }
+
+    for (const it of items || []) {
+      if (!it.link) continue;
+
+      const payload = buildForwardPayloadFromChannelLink(it.link);
+      if (!payload) continue;
+
+      results.push({
+        type: "article",
+        id: `item_${it.id}`,
+        title: it.title,
+        thumb_url: it.cover,
+        input_message_content: {
+          message_text: `🎬 ${it.title}`,
+        },
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: "▶️ Go to file",
+                url: `https://t.me/${ctx.me}?start=${payload}`,
+              },
+            ],
+          ],
+        },
+      });
+    }
 
     await ctx.answerInlineQuery(results, { cache_time: 1 });
   } catch (e) {
