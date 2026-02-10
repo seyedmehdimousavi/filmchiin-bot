@@ -63,17 +63,14 @@ function buildForwardPayloadFromChannelLink(rawLink) {
 
   const parts = url.pathname.split("/").filter(Boolean);
 
-  // private channel
   if (parts[0] === "c" && parts.length >= 3) {
     return `forward_${parts[1]}_${parts[2]}`;
   }
 
-  // public
   if (parts.length === 2) {
     return `forward_${parts[0]}_${parts[1]}`;
   }
 
-  // topic
   if (parts.length === 3) {
     return `forward_${parts[0]}_${parts[2]}`;
   }
@@ -82,7 +79,7 @@ function buildForwardPayloadFromChannelLink(rawLink) {
 }
 
 // ===================================================
-// Secure token (NO DOT — clickable)
+// Secure token (NO DOT)
 // ===================================================
 function encodeSendToken(payload) {
   const sig = crypto
@@ -124,7 +121,6 @@ bot.start(async (ctx) => {
     if (payload.startsWith("forward_")) {
       const parts = payload.split("_");
 
-      // private channel
       if (parts.length === 3 && /^\d+$/.test(parts[1])) {
         const fwd = await ctx.telegram.forwardMessage(
           ctx.chat.id,
@@ -135,7 +131,6 @@ bot.start(async (ctx) => {
         return;
       }
 
-      // public
       if (parts.length === 3) {
         const fwd = await ctx.telegram.forwardMessage(
           ctx.chat.id,
@@ -157,7 +152,7 @@ bot.start(async (ctx) => {
 });
 
 // ===================================================
-// TEXT HANDLER (PRIVATE + GROUP)
+// TEXT HANDLER
 // ===================================================
 bot.on("text", async (ctx) => {
   const text = ctx.message.text.trim();
@@ -210,20 +205,28 @@ bot.on("text", async (ctx) => {
   if (!["group", "supergroup"].includes(ctx.chat.type)) return;
 
   // ---------- /search ----------
-  if (text.toLowerCase().startsWith("/search")) {
-    const q = text.replace(/^\/search/i, "").trim();
-    if (!q) return ctx.reply("❌ بعد از /search نام فیلم را بنویس");
+  if (/^\/search(@\w+)?/i.test(text)) {
+    let query = text.replace(/^\/search(@\w+)?/i, "").trim();
+
+    // 🔁 اگر متن نداشت، از ریپلای بخوان
+    if (!query && ctx.message.reply_to_message?.text) {
+      query = ctx.message.reply_to_message.text.trim();
+    }
+
+    if (!query) {
+      return ctx.reply("❌ بعد از /search نام فیلم را بنویس یا روی پیام ریپلای کن");
+    }
 
     const { data: movies } = await supabase
       .from("movies")
       .select("title, cover, link")
-      .ilike("title", `%${q}%`)
+      .ilike("title", `%${query}%`)
       .limit(5);
 
     const { data: items } = await supabase
       .from("movie_items")
       .select("title, cover, link")
-      .ilike("title", `%${q}%`)
+      .ilike("title", `%${query}%`)
       .limit(5);
 
     const all = [...(movies || []), ...(items || [])];
@@ -291,7 +294,7 @@ bot.on("text", async (ctx) => {
 });
 
 // ===================================================
-console.log("✅ FILMCHIIN BOT RUNNING (NODE | PRIVATE + GROUP | CLICKABLE SEND)");
+console.log("✅ FILMCHIIN BOT RUNNING (SMART SEARCH + REPLY SUPPORT)");
 bot.launch();
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
