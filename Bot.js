@@ -255,42 +255,51 @@ bot.on("text", async (ctx) => {
     return;
   }
 
-  // ---------- /send_<token> ----------
-  if (text.startsWith("/send_")) {
-    const token = text.replace("/send_", "").trim();
-    const payload = decodeSendToken(token);
+// ---------- /send_<token> (ACCEPT WITH OR WITHOUT @BOT) ----------
+if (/^\/send(@\w+)?_/i.test(text)) {
 
-    if (!payload || !payload.startsWith("forward_")) {
-      return ctx.reply("❌ دستور نامعتبر");
-    }
+  const token = text
+    // حذف /send یا /send@Bot
+    .replace(/^\/send(@\w+)?_/i, "")
+    // اگر آخرش @Bot چسبیده باشد حذفش کن
+    .replace(/@\w+$/i, "")
+    .trim();
 
-    const parts = payload.split("_");
+  const payload = decodeSendToken(token);
 
-    try {
-      if (parts.length === 3 && /^\d+$/.test(parts[1])) {
-        await ctx.telegram.forwardMessage(
-          ctx.chat.id,
-          `-100${parts[1]}`,
-          Number(parts[2])
-        );
-        return;
-      }
-
-      if (parts.length === 3) {
-        await ctx.telegram.forwardMessage(
-          ctx.chat.id,
-          `@${parts[1]}`,
-          Number(parts[2])
-        );
-        return;
-      }
-
-      ctx.reply("❌ خطا در ارسال");
-    } catch (e) {
-      console.error("SEND ERROR:", e);
-      ctx.reply("❌ ارسال فایل ناموفق بود");
-    }
+  if (!payload || !payload.startsWith("forward_")) {
+    return ctx.reply("❌ دستور نامعتبر");
   }
+
+  const parts = payload.split("_");
+
+  try {
+    // private channel
+    if (parts.length === 3 && /^\d+$/.test(parts[1])) {
+      await ctx.telegram.forwardMessage(
+        ctx.chat.id,
+        `-100${parts[1]}`,
+        Number(parts[2])
+      );
+      return;
+    }
+
+    // public channel / group
+    if (parts.length === 3) {
+      await ctx.telegram.forwardMessage(
+        ctx.chat.id,
+        `@${parts[1]}`,
+        Number(parts[2])
+      );
+      return;
+    }
+
+    ctx.reply("❌ خطا در ارسال");
+  } catch (e) {
+    console.error("SEND ERROR:", e);
+    ctx.reply("❌ ارسال فایل ناموفق بود");
+  }
+}
 });
 
 // ===================================================
