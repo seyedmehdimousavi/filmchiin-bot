@@ -31,6 +31,7 @@ const supabase = createClient(
 // ===================================================
 // Helpers
 // ===================================================
+
 function containsMedia(msg) {
   return (
     msg?.video ||
@@ -40,6 +41,46 @@ function containsMedia(msg) {
     msg?.voice ||
     false
   );
+}
+
+// حذف - و . و فقط استفاده از حروف + عدد + _
+function cleanBase64(str) {
+  return str.replace(/-/g, "").replace(/\./g, "").replace(/=/g, "");
+}
+
+function encodeSendToken(payload) {
+  const data = cleanBase64(
+    Buffer.from(payload).toString("base64url")
+  );
+
+  const sig = cleanBase64(
+    crypto
+      .createHmac("sha256", SEND_SECRET)
+      .update(payload)
+      .digest("base64url")
+      .slice(0, 10)
+  );
+
+  return `${data}_${sig}`;
+}
+
+function decodeSendToken(token) {
+  if (!token || !token.includes("_")) return null;
+
+  const [data, sig] = token.split("_");
+  if (!data || !sig) return null;
+
+  let payload;
+  try {
+    payload = Buffer.from(data, "base64url").toString();
+  } catch {
+    return null;
+  }
+
+  const expected = encodeSendToken(payload);
+  if (!expected.endsWith(sig)) return null;
+
+  return payload;
 }
 
 function buildForwardPayloadFromChannelLink(rawLink) {
@@ -76,39 +117,6 @@ function buildForwardPayloadFromChannelLink(rawLink) {
   }
 
   return null;
-}
-
-// ===================================================
-// Secure token (NO DOT)
-// ===================================================
-function encodeSendToken(payload) {
-  const sig = crypto
-    .createHmac("sha256", SEND_SECRET)
-    .update(payload)
-    .digest("base64url")
-    .slice(0, 12);
-
-  const data = Buffer.from(payload).toString("base64url");
-  return `${data}${sig}`;
-}
-
-function decodeSendToken(token) {
-  if (!token || token.length < 20) return null;
-
-  const sig = token.slice(-12);
-  const data = token.slice(0, -12);
-
-  let payload;
-  try {
-    payload = Buffer.from(data, "base64url").toString();
-  } catch {
-    return null;
-  }
-
-  const expected = encodeSendToken(payload);
-  if (!expected.endsWith(sig)) return null;
-
-  return payload;
 }
 
 // ===================================================
@@ -149,6 +157,56 @@ bot.start(async (ctx) => {
     console.error("START ERROR:", e);
     ctx.reply("❌ خطا در دریافت فیلم");
   }
+});
+
+// ===================================================
+// INLINE SEARCH (WITH SYNOPSIS)
+// ===================================================
+bot.on("inline_query", async (ctx) => {
+  const q = ctx.inlineQuery.query.trim();
+  if (q.length < 2) return ctx.answerInlineQuery([], { cache_time: 1 });
+
+  const { data: movies } = await supabase
+    .from("movies")
+    .select("id, title, cover, link, synopsis")
+    .ilike("title", `%${q}%`)
+    .limit(5);
+
+  const { data: items } = await supabase
+    .from("movie_items")
+    .select("id, title, cover, link, synopsis")
+    .ilike("title", `%${q}%`)
+    .limit(5);
+
+  const results = [];
+
+  for (const m of [...(movies || []), ...(items || [])]) {
+    const payload = buildForwardPayloadFromChannelLink(m.link);
+    if (!payload) continue;
+
+    results.push({
+      type: "article",
+      id: `${m.id}_${Math.random()}`,
+      title: m.title,
+      description: m.synopsis || "خلاصه موجود نیست",
+      thumb_url: m.cover,
+      input_message_content: {
+        message_text: `🎬 ${m.title}`,
+      },
+      reply_markup: {
+        inline_keyboard: [
+          [
+            {
+              text: "▶️ Go to file",
+              url: `https://t.me/${ctx.me}?start=${payload}`,
+            },
+          ],
+        ],
+      },
+    });
+  }
+
+  await ctx.answerInlineQuery(results, { cache_time: 1 });
 });
 
 // ===================================================
@@ -208,7 +266,6 @@ bot.on("text", async (ctx) => {
   if (/^\/search(@\w+)?/i.test(text)) {
     let query = text.replace(/^\/search(@\w+)?/i, "").trim();
 
-    // 🔁 اگر متن نداشت، از ریپلای بخوان
     if (!query && ctx.message.reply_to_message?.text) {
       query = ctx.message.reply_to_message.text.trim();
     }
@@ -255,55 +312,50 @@ bot.on("text", async (ctx) => {
     return;
   }
 
-// ---------- /send_<token> (ACCEPT WITH OR WITHOUT @BOT) ----------
-if (/^\/send(@\w+)?_/i.test(text)) {
+  // ---------- /send ----------
+  if (/^\/send(@\w+)?_/i.test(text)) {
+    const token = text
+      .replace(/^\/send(@\w+)?_/i, "")
+      .replace(/@\w+$/i, "")
+      .trim();
 
-  const token = text
-    // حذف /send یا /send@Bot
-    .replace(/^\/send(@\w+)?_/i, "")
-    // اگر آخرش @Bot چسبیده باشد حذفش کن
-    .replace(/@\w+$/i, "")
-    .trim();
+    const payload = decodeSendToken(token);
 
-  const payload = decodeSendToken(token);
-
-  if (!payload || !payload.startsWith("forward_")) {
-    return ctx.reply("❌ دستور نامعتبر");
-  }
-
-  const parts = payload.split("_");
-
-  try {
-    // private channel
-    if (parts.length === 3 && /^\d+$/.test(parts[1])) {
-      await ctx.telegram.forwardMessage(
-        ctx.chat.id,
-        `-100${parts[1]}`,
-        Number(parts[2])
-      );
-      return;
+    if (!payload || !payload.startsWith("forward_")) {
+      return ctx.reply("❌ دستور نامعتبر");
     }
 
-    // public channel / group
-    if (parts.length === 3) {
-      await ctx.telegram.forwardMessage(
-        ctx.chat.id,
-        `@${parts[1]}`,
-        Number(parts[2])
-      );
-      return;
-    }
+    const parts = payload.split("_");
 
-    ctx.reply("❌ خطا در ارسال");
-  } catch (e) {
-    console.error("SEND ERROR:", e);
-    ctx.reply("❌ ارسال فایل ناموفق بود");
+    try {
+      if (parts.length === 3 && /^\d+$/.test(parts[1])) {
+        await ctx.telegram.forwardMessage(
+          ctx.chat.id,
+          `-100${parts[1]}`,
+          Number(parts[2])
+        );
+        return;
+      }
+
+      if (parts.length === 3) {
+        await ctx.telegram.forwardMessage(
+          ctx.chat.id,
+          `@${parts[1]}`,
+          Number(parts[2])
+        );
+        return;
+      }
+
+      ctx.reply("❌ خطا در ارسال");
+    } catch (e) {
+      console.error("SEND ERROR:", e);
+      ctx.reply("❌ ارسال فایل ناموفق بود");
+    }
   }
-}
 });
 
 // ===================================================
-console.log("✅ FILMCHIIN BOT RUNNING (SMART SEARCH + REPLY SUPPORT)");
+console.log("✅ FILMCHIIN BOT RUNNING (FULL INLINE SYNOPSIS + SAFE TOKEN)");
 bot.launch();
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
