@@ -31,6 +31,7 @@ const supabase = createClient(
 // ===================================================
 // Helpers
 // ===================================================
+
 function containsMedia(msg) {
   return (
     msg?.video ||
@@ -48,12 +49,19 @@ function shortenText(text, max = 120) {
   return text.substring(0, max) + "…";
 }
 
+// جلوگیری از شکستن OR کوئری
+function sanitize(value) {
+  return value
+    .replace(/,/g, "")
+    .replace(/\(/g, "")
+    .replace(/\)/g, "")
+    .trim();
+}
+
 /*
-  مطابق اسکیما:
-  movies:
-    title, stars, director, genre
-  movie_items:
-    title, stars, director, genre
+  منطق جدید جستجو:
+  #tag  → فقط genre و product
+  عادی → title, synopsis, stars, director, genre, product
 */
 function buildSearchConfig(query) {
   const isHashtag = query.startsWith("#");
@@ -61,28 +69,40 @@ function buildSearchConfig(query) {
     ? query.substring(1).trim()
     : query.trim();
 
-  const safeQuery = cleanQuery.replace(/,/g, ""); // جلوگیری از خطای OR
-
   return {
     isHashtag,
-    value: safeQuery
+    value: sanitize(cleanQuery)
   };
 }
 
 function applySearch(builder, search) {
+
+  const value = search.value;
+
+  if (!value) return builder;
+
+  const pattern = `%${value}%`;
+
+  // حالت هشتگ → فقط ژانر و کشور
   if (search.isHashtag) {
-    // فقط ژانر
-    return builder.ilike("genre", `%${search.value}%`);
+    return builder.or(
+      `genre.ilike.${pattern},product.ilike.${pattern}`
+    );
   }
 
-  // جستجوی چندستونه صحیح (بدون % داخل متغیر)
-  return builder.or(
-    `title.ilike.%${search.value}%,
-     stars.ilike.%${search.value}%,
-     director.ilike.%${search.value}%,
-     genre.ilike.%${search.value}%`
-  );
+  // حالت متن عادی → فقط فیلدهای محتوایی
+  const orQuery =
+    `title.ilike.${pattern},` +
+    `synopsis.ilike.${pattern},` +
+    `stars.ilike.${pattern},` +
+    `director.ilike.${pattern}`;
+
+  return builder.or(orQuery);
 }
+
+// ===================================================
+// Forward Payload
+// ===================================================
 
 function buildForwardPayloadFromChannelLink(rawLink) {
   const trimmed = (rawLink || "").trim();
@@ -123,6 +143,7 @@ function buildForwardPayloadFromChannelLink(rawLink) {
 // ===================================================
 // Secure token
 // ===================================================
+
 function safeBase64(str) {
   return Buffer.from(str)
     .toString("base64")
@@ -167,6 +188,7 @@ function decodeSendToken(token) {
 // ===================================================
 // /start
 // ===================================================
+
 bot.start(async (ctx) => {
   const payload = ctx.startPayload || "";
 
@@ -196,16 +218,20 @@ bot.start(async (ctx) => {
     }
 
     ctx.reply("🎬 نام فیلم را ارسال کنید");
+
   } catch (e) {
     console.error("START ERROR:", e.message);
   }
 });
 
 // ===================================================
-// INLINE QUERY (اصلاح‌شده کامل)
+// INLINE QUERY (نسخه کاملاً اصلاح‌شده)
 // ===================================================
+
 bot.on("inline_query", async (ctx) => {
+
   try {
+
     const q = ctx.inlineQuery.query.trim();
     if (q.length < 2) {
       return ctx.answerInlineQuery([], { cache_time: 1 });
@@ -216,41 +242,54 @@ bot.on("inline_query", async (ctx) => {
     const moviesQuery = applySearch(
       supabase
         .from("movies")
-        .select("id, title, cover, link, synopsis, stars, director, genre")
-        .limit(5),
+        .select("id, title, cover, link, synopsis, stars, director, genre, product")
+        .limit(10),
       search
     );
 
     const itemsQuery = applySearch(
       supabase
         .from("movie_items")
-        .select("id, title, cover, link, synopsis, stars, director, genre")
-        .limit(5),
+        .select("id, title, cover, link, synopsis, stars, director, genre, product")
+        .limit(10),
       search
     );
 
     const { data: movies } = await moviesQuery;
     const { data: items } = await itemsQuery;
 
+    const combined = [...(movies || []), ...(items || [])];
+
     const results = [];
 
-    for (const m of [...(movies || []), ...(items || [])]) {
+    for (const m of combined) {
+
       const payload = buildForwardPayloadFromChannelLink(m.link);
       if (!payload) continue;
 
       results.push({
-        type: "article",
-        id: `res_${Math.random()}`,
-        title: m.title,
-        description: shortenText(
-          m.synopsis ||
-          `${m.genre || ""} | ${m.stars || ""} | ${m.director || ""}`
-        ),
-        thumb_url: m.cover,
-        input_message_content: {
-          message_text: `🎬 ${m.title}`,
+  type: "article",
+  id: `res_${Math.random()}`,
+  title: m.title,
+  description: shortenText(
+    m.synopsis ||
+    `${m.genre || ""} | ${m.product || ""} | ${m.stars || ""}`
+  ),
+  thumb_url: m.cover,
+  input_message_content: {
+    message_text: `🎬 ${m.title}`,
+  },
+  reply_markup: {
+    inline_keyboard: [
+      [
+        {
+          text: "▶️ Go to file",
+          url: `https://t.me/${ctx.botInfo.username}?start=${payload}`,
         },
-      });
+      ],
+    ],
+  },
+});
     }
 
     await ctx.answerInlineQuery(results, { cache_time: 1 });
@@ -258,53 +297,82 @@ bot.on("inline_query", async (ctx) => {
   } catch (e) {
     console.error("INLINE ERROR:", e.message);
   }
+
 });
 // ===================================================
 // TEXT HANDLER
 // ===================================================
+
 bot.on("text", async (ctx) => {
+
   const text = ctx.message.text.trim();
 
   // ===================================================
   // PRIVATE SEARCH
   // ===================================================
   if (ctx.chat.type === "private") {
+
     if (text.startsWith("/")) return;
 
     try {
+
       const search = buildSearchConfig(text);
 
       const moviesQuery = applySearch(
         supabase
           .from("movies")
-          .select("title, cover, link, stars, director, genre")
-          .limit(5),
+          .select("id, title, cover, link, synopsis, stars, director, genre, product")
+          .limit(10),
         search
       );
 
       const itemsQuery = applySearch(
         supabase
           .from("movie_items")
-          .select("title, cover, link, stars, director, genre")
-          .limit(5),
+          .select("id, title, cover, link, synopsis, stars, director, genre, product")
+          .limit(10),
         search
       );
 
       const { data: movies } = await moviesQuery;
       const { data: items } = await itemsQuery;
 
-      const all = [...(movies || []), ...(items || [])];
+      let combined = [...(movies || []), ...(items || [])];
 
-      if (!all.length)
+      if (!combined.length) {
         return ctx.reply("❌ فیلمی پیدا نشد");
+      }
 
-      for (const m of all) {
+      // جلوگیری از تکراری‌ها (بر اساس title + link)
+      const uniqueMap = new Map();
+      for (const m of combined) {
+        const key = `${m.title}_${m.link}`;
+        if (!uniqueMap.has(key)) {
+          uniqueMap.set(key, m);
+        }
+      }
+
+      const uniqueResults = Array.from(uniqueMap.values());
+
+      for (const m of uniqueResults) {
+
         const payload = buildForwardPayloadFromChannelLink(m.link);
         if (!payload) continue;
 
         await ctx.replyWithPhoto(m.cover || undefined, {
-          caption: `🎬 ${m.title}`,
-        });
+  caption: `🎬 ${m.title}`,
+  reply_markup: {
+    inline_keyboard: [
+      [
+        {
+          text: "▶️ Go to file",
+          url: `https://t.me/${ctx.botInfo.username}?start=${payload}`,
+        },
+      ],
+    ],
+  },
+});
+
       }
 
     } catch (err) {
@@ -327,45 +395,73 @@ bot.on("text", async (ctx) => {
       query = ctx.message.reply_to_message.text.trim();
     }
 
-    if (!query)
+    if (!query) {
       return ctx.reply("❌ نام فیلم را وارد کنید");
+    }
 
     try {
+
       const search = buildSearchConfig(query);
 
       const moviesQuery = applySearch(
         supabase
           .from("movies")
-          .select("title, cover, link, stars, director, genre")
-          .limit(5),
+          .select("id, title, cover, link, synopsis, stars, director, genre, product")
+          .limit(10),
         search
       );
 
       const itemsQuery = applySearch(
         supabase
           .from("movie_items")
-          .select("title, cover, link, stars, director, genre")
-          .limit(5),
+          .select("id, title, cover, link, synopsis, stars, director, genre, product")
+          .limit(10),
         search
       );
 
       const { data: movies } = await moviesQuery;
       const { data: items } = await itemsQuery;
 
-      const all = [...(movies || []), ...(items || [])];
+      let combined = [...(movies || []), ...(items || [])];
 
-      if (!all.length)
+      if (!combined.length) {
         return ctx.reply("❌ چیزی پیدا نشد");
+      }
 
-      for (const m of all) {
+      // حذف تکراری‌ها
+      const uniqueMap = new Map();
+      for (const m of combined) {
+        const key = `${m.title}_${m.link}`;
+        if (!uniqueMap.has(key)) {
+          uniqueMap.set(key, m);
+        }
+      }
+
+      const uniqueResults = Array.from(uniqueMap.values());
+
+      for (const m of uniqueResults) {
+
         const payload = buildForwardPayloadFromChannelLink(m.link);
         if (!payload) continue;
 
         const token = encodeSendToken(payload);
 
         await ctx.replyWithPhoto(m.cover || undefined, {
-          caption: `🎬 ${m.title}\n\n/send_${token}`,
-        });
+  caption:
+    `🎬 ${m.title}\n\n` +
+    `/send_${token}`,
+  reply_markup: {
+    inline_keyboard: [
+      [
+        {
+          text: "▶️ Go to file",
+          url: `https://t.me/${ctx.botInfo.username}?start=${payload}`,
+        },
+      ],
+    ],
+  },
+});
+
       }
 
     } catch (err) {
@@ -376,7 +472,7 @@ bot.on("text", async (ctx) => {
   }
 
   // ===================================================
-  // SEND
+  // SEND COMMAND
   // ===================================================
   if (/^\/send(@\w+)?_/i.test(text)) {
 
@@ -394,6 +490,7 @@ bot.on("text", async (ctx) => {
     const parts = payload.split("_");
 
     try {
+
       if (parts.length === 3 && /^\d+$/.test(parts[1])) {
         await ctx.telegram.forwardMessage(
           ctx.chat.id,
@@ -416,18 +513,24 @@ bot.on("text", async (ctx) => {
       console.error("SEND ERROR:", err.message);
     }
   }
+
 });
 
 // ===================================================
 // GLOBAL ERROR HANDLER
 // ===================================================
+
 bot.catch((err) => {
   if (err?.response?.error_code === 403) return;
   if (err?.code === "ETIMEDOUT") return;
   console.error("UNHANDLED ERROR:", err);
 });
 
-console.log("✅ FILMCHIIN BOT RUNNING (FULL SEARCH FIXED)");
+// ===================================================
+// LAUNCH
+// ===================================================
+
+console.log("✅ FILMCHIIN BOT RUNNING (ADVANCED SEARCH ENABLED)");
 
 bot.launch({ dropPendingUpdates: true });
 
