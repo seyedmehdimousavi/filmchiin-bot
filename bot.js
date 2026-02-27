@@ -2,6 +2,7 @@ require("dotenv").config();
 const { Telegraf } = require("telegraf");
 const { createClient } = require("@supabase/supabase-js");
 const crypto = require("crypto");
+const http = require("http");
 
 // ===================================================
 // Init bot
@@ -27,6 +28,10 @@ let isPolling = false;
 let botUsername = BOT_USERNAME;
 let lastMovieUpdatedAt = null;
 let lastItemCreatedAt = null;
+
+let subscribersTableAvailable = true;
+let subscribersTableWarningShown = false;
+const runtimeSubscribers = new Map();
 
 // ===================================================
 // Supabase
@@ -67,8 +72,39 @@ function isChatMigratedError(err) {
   return err?.response?.error_code === 400 && /migrated/i.test(message);
 }
 
+function isMissingTableError(err) {
+  const message = err?.message || err?.details || "";
+  return /Could not find the table/i.test(message) || /relation .* does not exist/i.test(message);
+}
+
+function rememberRuntimeSubscriber(chat) {
+  if (!chat?.id || !chat?.type) return;
+  runtimeSubscribers.set(String(chat.id), {
+    chat_id: String(chat.id),
+    chat_type: chat.type,
+    is_active: true,
+  });
+}
+
+function forgetRuntimeSubscriber(chatId) {
+  if (!chatId) return;
+  runtimeSubscribers.delete(String(chatId));
+}
+
+function warnSubscribersFallbackOnce() {
+  if (subscribersTableWarningShown) return;
+  subscribersTableWarningShown = true;
+  console.error(
+    `SUBSCRIBERS TABLE NOT FOUND (${SUBSCRIBERS_TABLE}) -> using in-memory subscribers only.`
+  );
+}
+
 async function upsertSubscriber(chat, source = "unknown") {
   if (!chat?.id || !chat?.type) return;
+
+  rememberRuntimeSubscriber(chat);
+
+  if (!subscribersTableAvailable) return;
 
   const fullRow = {
     chat_id: String(chat.id),
@@ -101,11 +137,22 @@ async function upsertSubscriber(chat, source = "unknown") {
 
   if (!minimalError) return;
 
+  if (isMissingTableError(minimalError)) {
+    subscribersTableAvailable = false;
+    warnSubscribersFallbackOnce();
+    return;
+  }
+
   console.error("SUBSCRIBER UPSERT ERROR:", minimalError.message);
 }
 
 async function markSubscriberInactive(chatId) {
   if (!chatId) return;
+
+  forgetRuntimeSubscriber(chatId);
+
+  if (!subscribersTableAvailable) return;
+
   const { error } = await supabase
     .from(SUBSCRIBERS_TABLE)
     .update({ is_active: false, updated_at: new Date().toISOString() })
@@ -119,6 +166,12 @@ async function markSubscriberInactive(chatId) {
     .eq("chat_id", String(chatId));
 
   if (fallbackError) {
+    if (isMissingTableError(fallbackError)) {
+      subscribersTableAvailable = false;
+      warnSubscribersFallbackOnce();
+      return;
+    }
+
     console.error("SUBSCRIBER DEACTIVATE ERROR:", fallbackError.message);
   }
 }
@@ -186,7 +239,11 @@ async function fetchLatestMovieItem(limit = 1) {
 async function fetchNewRows(tableName, sinceIso, timestampColumn = "created_at") {
   let query = supabase
     .from(tableName)
-    .select("id, title, cover, link, created_at, updated_at")
+    .select(
+      timestampColumn === "updated_at"
+        ? "id, title, cover, link, created_at, updated_at"
+        : "id, title, cover, link, created_at"
+    )
     .order(timestampColumn, { ascending: true })
     .order("id", { ascending: true })
     .limit(20);
@@ -206,6 +263,10 @@ async function fetchNewRows(tableName, sinceIso, timestampColumn = "created_at")
 }
 
 async function fetchActiveSubscribers() {
+  if (!subscribersTableAvailable) {
+    return Array.from(runtimeSubscribers.values());
+  }
+
   const { data, error } = await supabase
     .from(SUBSCRIBERS_TABLE)
     .select("chat_id, chat_type")
@@ -218,6 +279,12 @@ async function fetchActiveSubscribers() {
     .select("chat_id, chat_type");
 
   if (fallbackError) {
+    if (isMissingTableError(fallbackError)) {
+      subscribersTableAvailable = false;
+      warnSubscribersFallbackOnce();
+      return Array.from(runtimeSubscribers.values());
+    }
+
     console.error("SUBSCRIBERS FETCH ERROR:", fallbackError.message);
     return [];
   }
@@ -815,6 +882,19 @@ bot.telegram
   .catch((err) => {
     console.error("BOT INIT ERROR:", err.message);
   });
+
+
+const port = Number(process.env.PORT || 0);
+if (port > 0) {
+  http
+    .createServer((req, res) => {
+      res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+      res.end("filmchiin-bot alive");
+    })
+    .listen(port, () => {
+      console.log(`HTTP KEEPALIVE LISTENING ON ${port}`);
+    });
+}
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
