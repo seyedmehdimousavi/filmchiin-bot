@@ -25,7 +25,7 @@ const bot = new Telegraf(BOT_TOKEN);
 
 let isPolling = false;
 let botUsername = BOT_USERNAME;
-let lastMovieCreatedAt = null;
+let lastMovieUpdatedAt = null;
 let lastItemCreatedAt = null;
 
 // ===================================================
@@ -127,7 +127,8 @@ function buildNotificationPayload(movie, includeSend) {
   const payload = buildForwardPayloadFromChannelLink(movie.link);
   if (!payload) return null;
 
-  const captionLines = [`🎬 ${movie.title}`];
+  const safeTitle = movie.title || "بدون عنوان";
+  const captionLines = [`🎬 ${safeTitle}`];
 
   if (includeSend) {
     const token = encodeSendToken(payload);
@@ -153,8 +154,8 @@ function buildNotificationPayload(movie, includeSend) {
 async function fetchLatestMovie(limit = 1) {
   const { data, error } = await supabase
     .from("movies")
-    .select("id, title, cover, link, created_at")
-    .order("created_at", { ascending: false, nullsFirst: false })
+    .select("id, title, cover, link, created_at, updated_at")
+    .order("updated_at", { ascending: false, nullsFirst: false })
     .order("id", { ascending: false })
     .limit(limit);
 
@@ -182,15 +183,16 @@ async function fetchLatestMovieItem(limit = 1) {
   return (data || []).map((m) => ({ ...m, source: "movie_items" }));
 }
 
-async function fetchNewRows(tableName, sinceIso) {
+async function fetchNewRows(tableName, sinceIso, timestampColumn = "created_at") {
   let query = supabase
     .from(tableName)
-    .select("id, title, cover, link, created_at")
-    .order("created_at", { ascending: true })
+    .select("id, title, cover, link, created_at, updated_at")
+    .order(timestampColumn, { ascending: true })
+    .order("id", { ascending: true })
     .limit(20);
 
   if (sinceIso) {
-    query = query.gt("created_at", sinceIso);
+    query = query.gt(timestampColumn, sinceIso);
   }
 
   const { data, error } = await query;
@@ -263,7 +265,7 @@ async function bootstrapNotificationCursor() {
   const [latestMovie] = await fetchLatestMovie(1);
   const [latestItem] = await fetchLatestMovieItem(1);
 
-  lastMovieCreatedAt = latestMovie?.created_at || null;
+  lastMovieUpdatedAt = latestMovie?.updated_at || latestMovie?.created_at || null;
   lastItemCreatedAt = latestItem?.created_at || null;
 }
 
@@ -272,7 +274,7 @@ async function checkAndNotifyNewMovie() {
   isPolling = true;
 
   try {
-    const newMovies = await fetchNewRows("movies", lastMovieCreatedAt);
+    const newMovies = await fetchNewRows("movies", lastMovieUpdatedAt, "updated_at");
     const newItems = await fetchNewRows("movie_items", lastItemCreatedAt);
 
     for (const movie of newMovies) {
@@ -284,7 +286,8 @@ async function checkAndNotifyNewMovie() {
     }
 
     if (newMovies.length) {
-      lastMovieCreatedAt = newMovies[newMovies.length - 1].created_at;
+      const lastMovie = newMovies[newMovies.length - 1];
+      lastMovieUpdatedAt = lastMovie.updated_at || lastMovie.created_at;
     }
 
     if (newItems.length) {
@@ -354,11 +357,6 @@ function buildForwardPayloadFromChannelLink(rawLink) {
   const trimmed = (rawLink || "").trim();
   if (!trimmed || trimmed === "#") return null;
 
-  if (/^https?:\/\/t\.me\/Filmchinbot\?start=/i.test(trimmed)) {
-    const u = new URL(trimmed);
-    return u.searchParams.get("start");
-  }
-
   let url;
   try {
     url = new URL(trimmed);
@@ -368,6 +366,11 @@ function buildForwardPayloadFromChannelLink(rawLink) {
 
   const host = url.hostname.toLowerCase();
   if (host !== "t.me" && host !== "telegram.me") return null;
+
+  const directStart = url.searchParams.get("start");
+  if (directStart) {
+    return directStart;
+  }
 
   const parts = url.pathname.split("/").filter(Boolean);
 
