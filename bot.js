@@ -2,12 +2,16 @@ require("dotenv").config();
 const { Telegraf } = require("telegraf");
 const { createClient } = require("@supabase/supabase-js");
 const crypto = require("crypto");
+const http = require("http");
 
 // ===================================================
 // Init bot
 // ===================================================
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const SEND_SECRET = process.env.SEND_SECRET;
+const SUBSCRIBERS_TABLE = process.env.SUBSCRIBERS_TABLE || "telegram_subscribers";
+const MOVIE_POLL_INTERVAL_MS = Number(process.env.MOVIE_POLL_INTERVAL_MS || 60000);
+const BOT_USERNAME = process.env.BOT_USERNAME || "Filmchinbot";
 
 if (!BOT_TOKEN) {
   console.error("BOT_TOKEN missing");
@@ -19,6 +23,15 @@ if (!SEND_SECRET) {
 }
 
 const bot = new Telegraf(BOT_TOKEN);
+
+let isPolling = false;
+let botUsername = BOT_USERNAME;
+let lastMovieUpdatedAt = null;
+let lastItemCreatedAt = null;
+
+let subscribersTableAvailable = true;
+let subscribersTableWarningShown = false;
+const runtimeSubscribers = new Map();
 
 // ===================================================
 // Supabase
@@ -47,6 +60,309 @@ function shortenText(text, max = 120) {
   if (!text) return "";
   if (text.length <= max) return text;
   return text.substring(0, max) + "…";
+}
+
+function normalizeCover(cover) {
+  if (!cover || cover === "#") return undefined;
+  return cover;
+}
+
+function isChatMigratedError(err) {
+  const message = err?.response?.description || "";
+  return err?.response?.error_code === 400 && /migrated/i.test(message);
+}
+
+function isMissingTableError(err) {
+  const message = err?.message || err?.details || "";
+  return /Could not find the table/i.test(message) || /relation .* does not exist/i.test(message);
+}
+
+function rememberRuntimeSubscriber(chat) {
+  if (!chat?.id || !chat?.type) return;
+  runtimeSubscribers.set(String(chat.id), {
+    chat_id: String(chat.id),
+    chat_type: chat.type,
+    is_active: true,
+  });
+}
+
+function forgetRuntimeSubscriber(chatId) {
+  if (!chatId) return;
+  runtimeSubscribers.delete(String(chatId));
+}
+
+function warnSubscribersFallbackOnce() {
+  if (subscribersTableWarningShown) return;
+  subscribersTableWarningShown = true;
+  console.error(
+    `SUBSCRIBERS TABLE NOT FOUND (${SUBSCRIBERS_TABLE}) -> using in-memory subscribers only.`
+  );
+}
+
+async function upsertSubscriber(chat, source = "unknown") {
+  if (!chat?.id || !chat?.type) return;
+
+  rememberRuntimeSubscriber(chat);
+
+  if (!subscribersTableAvailable) return;
+
+  const fullRow = {
+    chat_id: String(chat.id),
+    chat_type: chat.type,
+    title: chat.title || null,
+    username: chat.username || null,
+    first_name: chat.first_name || null,
+    last_name: chat.last_name || null,
+    is_active: true,
+    source,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { error } = await supabase
+    .from(SUBSCRIBERS_TABLE)
+    .upsert(fullRow, { onConflict: "chat_id" });
+
+  if (!error) return;
+
+  // fallback for narrower subscriber schemas
+  const minimalRow = {
+    chat_id: String(chat.id),
+    chat_type: chat.type,
+    is_active: true,
+  };
+
+  const { error: minimalError } = await supabase
+    .from(SUBSCRIBERS_TABLE)
+    .upsert(minimalRow, { onConflict: "chat_id" });
+
+  if (!minimalError) return;
+
+  if (isMissingTableError(minimalError)) {
+    subscribersTableAvailable = false;
+    warnSubscribersFallbackOnce();
+    return;
+  }
+
+  console.error("SUBSCRIBER UPSERT ERROR:", minimalError.message);
+}
+
+async function markSubscriberInactive(chatId) {
+  if (!chatId) return;
+
+  forgetRuntimeSubscriber(chatId);
+
+  if (!subscribersTableAvailable) return;
+
+  const { error } = await supabase
+    .from(SUBSCRIBERS_TABLE)
+    .update({ is_active: false, updated_at: new Date().toISOString() })
+    .eq("chat_id", String(chatId));
+
+  if (!error) return;
+
+  const { error: fallbackError } = await supabase
+    .from(SUBSCRIBERS_TABLE)
+    .update({ is_active: false })
+    .eq("chat_id", String(chatId));
+
+  if (fallbackError) {
+    if (isMissingTableError(fallbackError)) {
+      subscribersTableAvailable = false;
+      warnSubscribersFallbackOnce();
+      return;
+    }
+
+    console.error("SUBSCRIBER DEACTIVATE ERROR:", fallbackError.message);
+  }
+}
+
+function buildNotificationPayload(movie, includeSend) {
+  const payload = buildForwardPayloadFromChannelLink(movie.link);
+  if (!payload) return null;
+
+  const safeTitle = movie.title || "بدون عنوان";
+  const captionLines = [`🎬 ${safeTitle}`];
+
+  if (includeSend) {
+    const token = encodeSendToken(payload);
+    captionLines.push("", `/send_${token}`);
+  }
+
+  return {
+    photo: normalizeCover(movie.cover),
+    caption: captionLines.join("\n"),
+    reply_markup: {
+      inline_keyboard: [
+        [
+          {
+            text: "▶️ Go to file",
+            url: `https://t.me/${botUsername}?start=${payload}`,
+          },
+        ],
+      ],
+    },
+  };
+}
+
+async function fetchLatestMovie(limit = 1) {
+  const { data, error } = await supabase
+    .from("movies")
+    .select("id, title, cover, link, created_at, updated_at")
+    .order("updated_at", { ascending: false, nullsFirst: false })
+    .order("id", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    console.error("LATEST MOVIE FETCH ERROR:", error.message);
+    return [];
+  }
+
+  return (data || []).map((m) => ({ ...m, source: "movies" }));
+}
+
+async function fetchLatestMovieItem(limit = 1) {
+  const { data, error } = await supabase
+    .from("movie_items")
+    .select("id, title, cover, link, created_at")
+    .order("created_at", { ascending: false, nullsFirst: false })
+    .order("id", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    console.error("LATEST MOVIE ITEM FETCH ERROR:", error.message);
+    return [];
+  }
+
+  return (data || []).map((m) => ({ ...m, source: "movie_items" }));
+}
+
+async function fetchNewRows(tableName, sinceIso, timestampColumn = "created_at") {
+  let query = supabase
+    .from(tableName)
+    .select(
+      timestampColumn === "updated_at"
+        ? "id, title, cover, link, created_at, updated_at"
+        : "id, title, cover, link, created_at"
+    )
+    .order(timestampColumn, { ascending: true })
+    .order("id", { ascending: true })
+    .limit(20);
+
+  if (sinceIso) {
+    query = query.gt(timestampColumn, sinceIso);
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    console.error(`${tableName.toUpperCase()} NEW ROWS FETCH ERROR:`, error.message);
+    return [];
+  }
+
+  return data || [];
+}
+
+async function fetchActiveSubscribers() {
+  if (!subscribersTableAvailable) {
+    return Array.from(runtimeSubscribers.values());
+  }
+
+  const { data, error } = await supabase
+    .from(SUBSCRIBERS_TABLE)
+    .select("chat_id, chat_type")
+    .eq("is_active", true);
+
+  if (!error) return data || [];
+
+  const { data: fallbackData, error: fallbackError } = await supabase
+    .from(SUBSCRIBERS_TABLE)
+    .select("chat_id, chat_type");
+
+  if (fallbackError) {
+    if (isMissingTableError(fallbackError)) {
+      subscribersTableAvailable = false;
+      warnSubscribersFallbackOnce();
+      return Array.from(runtimeSubscribers.values());
+    }
+
+    console.error("SUBSCRIBERS FETCH ERROR:", fallbackError.message);
+    return [];
+  }
+
+  return fallbackData || [];
+}
+
+async function notifySubscribersAboutMovie(movie) {
+  const subscribers = await fetchActiveSubscribers();
+  if (!subscribers.length) return;
+
+  for (const sub of subscribers) {
+    const includeSend = sub.chat_type === "group" || sub.chat_type === "supergroup";
+    const message = buildNotificationPayload(movie, includeSend);
+    if (!message) continue;
+
+    try {
+      if (message.photo) {
+        await bot.telegram.sendPhoto(sub.chat_id, message.photo, {
+          caption: message.caption,
+          reply_markup: message.reply_markup,
+        });
+      } else {
+        await bot.telegram.sendMessage(sub.chat_id, message.caption, {
+          reply_markup: message.reply_markup,
+        });
+      }
+    } catch (err) {
+      if (err?.response?.error_code === 403 || err?.response?.error_code === 400) {
+        await markSubscriberInactive(sub.chat_id);
+        continue;
+      }
+
+      if (isChatMigratedError(err)) {
+        await markSubscriberInactive(sub.chat_id);
+        continue;
+      }
+
+      console.error("NOTIFY ERROR:", err.message);
+    }
+  }
+}
+
+async function bootstrapNotificationCursor() {
+  const [latestMovie] = await fetchLatestMovie(1);
+  const [latestItem] = await fetchLatestMovieItem(1);
+
+  lastMovieUpdatedAt = latestMovie?.updated_at || latestMovie?.created_at || null;
+  lastItemCreatedAt = latestItem?.created_at || null;
+}
+
+async function checkAndNotifyNewMovie() {
+  if (isPolling) return;
+  isPolling = true;
+
+  try {
+    const newMovies = await fetchNewRows("movies", lastMovieUpdatedAt, "updated_at");
+    const newItems = await fetchNewRows("movie_items", lastItemCreatedAt);
+
+    for (const movie of newMovies) {
+      await notifySubscribersAboutMovie({ ...movie, source: "movies" });
+    }
+
+    for (const item of newItems) {
+      await notifySubscribersAboutMovie({ ...item, source: "movie_items" });
+    }
+
+    if (newMovies.length) {
+      const lastMovie = newMovies[newMovies.length - 1];
+      lastMovieUpdatedAt = lastMovie.updated_at || lastMovie.created_at;
+    }
+
+    if (newItems.length) {
+      lastItemCreatedAt = newItems[newItems.length - 1].created_at;
+    }
+  } finally {
+    isPolling = false;
+  }
 }
 
 // جلوگیری از شکستن OR کوئری
@@ -108,11 +424,6 @@ function buildForwardPayloadFromChannelLink(rawLink) {
   const trimmed = (rawLink || "").trim();
   if (!trimmed || trimmed === "#") return null;
 
-  if (/^https?:\/\/t\.me\/Filmchinbot\?start=/i.test(trimmed)) {
-    const u = new URL(trimmed);
-    return u.searchParams.get("start");
-  }
-
   let url;
   try {
     url = new URL(trimmed);
@@ -122,6 +433,11 @@ function buildForwardPayloadFromChannelLink(rawLink) {
 
   const host = url.hostname.toLowerCase();
   if (host !== "t.me" && host !== "telegram.me") return null;
+
+  const directStart = url.searchParams.get("start");
+  if (directStart) {
+    return directStart;
+  }
 
   const parts = url.pathname.split("/").filter(Boolean);
 
@@ -193,6 +509,8 @@ bot.start(async (ctx) => {
   const payload = ctx.startPayload || "";
 
   try {
+    await upsertSubscriber(ctx.chat, "start");
+
     if (payload.startsWith("forward_")) {
       const parts = payload.split("_");
 
@@ -304,6 +622,8 @@ bot.on("inline_query", async (ctx) => {
 // ===================================================
 
 bot.on("text", async (ctx) => {
+
+  await upsertSubscriber(ctx.chat, "text");
 
   const text = ctx.message.text.trim();
 
@@ -516,6 +836,24 @@ bot.on("text", async (ctx) => {
 
 });
 
+bot.on("my_chat_member", async (ctx) => {
+  try {
+    await upsertSubscriber(ctx.chat, "my_chat_member");
+  } catch (err) {
+    console.error("MY_CHAT_MEMBER ERROR:", err.message);
+  }
+});
+
+bot.on("message", async (ctx, next) => {
+  if (!ctx.message) return next();
+
+  if (["group", "supergroup", "private"].includes(ctx.chat?.type)) {
+    await upsertSubscriber(ctx.chat, "message");
+  }
+
+  return next();
+});
+
 // ===================================================
 // GLOBAL ERROR HANDLER
 // ===================================================
@@ -533,6 +871,30 @@ bot.catch((err) => {
 console.log("✅ FILMCHIIN BOT RUNNING (ADVANCED SEARCH ENABLED)");
 
 bot.launch({ dropPendingUpdates: true });
+
+bot.telegram
+  .getMe()
+  .then(async (me) => {
+    botUsername = me?.username || BOT_USERNAME;
+    await bootstrapNotificationCursor();
+    setInterval(checkAndNotifyNewMovie, MOVIE_POLL_INTERVAL_MS);
+  })
+  .catch((err) => {
+    console.error("BOT INIT ERROR:", err.message);
+  });
+
+
+const port = Number(process.env.PORT || 0);
+if (port > 0) {
+  http
+    .createServer((req, res) => {
+      res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+      res.end("filmchiin-bot alive");
+    })
+    .listen(port, () => {
+      console.log(`HTTP KEEPALIVE LISTENING ON ${port}`);
+    });
+}
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
