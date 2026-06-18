@@ -34,6 +34,30 @@ let subscribersTableWarningShown = false;
 const runtimeSubscribers = new Map();
 
 // ===================================================
+// دکمه‌های منوی اصلی (جدیدترین‌ها / پردانلودترین‌ها / ژانر‌ها)
+// ===================================================
+const BTN_NEWEST = "🆕 جدیدترین‌ها";
+const BTN_POPULAR = "🔥 پردانلودترین‌ها";
+const BTN_GENRES = "🎭 ژانر‌ها";
+
+const WELCOME_TEXT =
+  "به فیلم‌چین خوش آمدید...\n" +
+  "برای جست‌وجو نام فیلم را ارسال کنید یا از دکمه‌های زیر استفاده کنید";
+
+const MAIN_MENU_REPLY_MARKUP = {
+  keyboard: [[BTN_NEWEST, BTN_POPULAR], [BTN_GENRES]],
+  resize_keyboard: true,
+};
+
+const LIST_PAGE_SIZE = 10;
+const POPULAR_LIST_LIMIT = 20;
+const GENRE_LIST_LIMIT = 30;
+const GENRE_CACHE_TTL_MS = 10 * 60 * 1000; // ۱۰ دقیقه کش لیست ژانرها
+
+let genreListCache = [];
+let genreListCacheAt = 0;
+
+// ===================================================
 // Supabase
 // ===================================================
 const supabase = createClient(
@@ -502,6 +526,161 @@ function decodeSendToken(token) {
 }
 
 // ===================================================
+// منوی فیلم‌ها (جدیدترین‌ها / پردانلودترین‌ها / ژانر‌ها)
+// ===================================================
+
+function isPersianToken(token) {
+  const clean = token.startsWith("#") ? token.slice(1) : token;
+  return clean.length > 0 && !/^[A-Za-z]/.test(clean);
+}
+
+async function getGenreList() {
+  const now = Date.now();
+  if (genreListCache.length && now - genreListCacheAt < GENRE_CACHE_TTL_MS) {
+    return genreListCache;
+  }
+
+  const { data, error } = await supabase.from("movies").select("genre");
+
+  if (error) {
+    console.error("GENRE LIST FETCH ERROR:", error.message);
+    return genreListCache;
+  }
+
+  const counts = {};
+  for (const row of data || []) {
+    if (!row.genre) continue;
+    for (const raw of row.genre.split(" ")) {
+      const name = raw.trim();
+      if (!name || !isPersianToken(name)) continue;
+      counts[name] = (counts[name] || 0) + 1;
+    }
+  }
+
+  genreListCache = Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, GENRE_LIST_LIMIT)
+    .map(([name, count]) => ({ name, count }));
+  genreListCacheAt = now;
+
+  return genreListCache;
+}
+
+async function fetchNewestMovies(limit = LIST_PAGE_SIZE) {
+  const { data, error } = await supabase
+    .from("movies")
+    .select("id, title")
+    .order("updated_at", { ascending: false, nullsFirst: false })
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    console.error("NEWEST MOVIES FETCH ERROR:", error.message);
+    return [];
+  }
+
+  return data || [];
+}
+
+async function fetchPopularMoviesList(limit = POPULAR_LIST_LIMIT) {
+  const { data, error } = await supabase
+    .from("movies")
+    .select("id, title")
+    .eq("is_popular", true)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    console.error("POPULAR MOVIES FETCH ERROR:", error.message);
+    return [];
+  }
+
+  return data || [];
+}
+
+async function fetchMoviesByGenre(genreName, offset = 0, limit = LIST_PAGE_SIZE) {
+  const pattern = `%${genreName}%`;
+
+  const { data, error } = await supabase
+    .from("movies")
+    .select("id, title")
+    .ilike("genre", pattern)
+    .order("updated_at", { ascending: false, nullsFirst: false })
+    .order("created_at", { ascending: false })
+    .range(offset, offset + limit); // یکی بیشتر می‌گیریم تا بفهمیم ادامه دارد یا نه
+
+  if (error) {
+    console.error("GENRE MOVIES FETCH ERROR:", error.message);
+    return { items: [], hasMore: false };
+  }
+
+  const rows = data || [];
+  const hasMore = rows.length > limit;
+  return { items: rows.slice(0, limit), hasMore };
+}
+
+function movieListKeyboard(movies) {
+  const rows = [[{ text: "🔙 بازگشت", callback_data: "back:menu" }]];
+  for (const m of movies) {
+    rows.push([
+      { text: shortenText(m.title || "بدون عنوان", 60), callback_data: `m:${m.id}` },
+    ]);
+  }
+  return { inline_keyboard: rows };
+}
+
+async function buildGenresKeyboard() {
+  const genres = await getGenreList();
+  const rows = [[{ text: "🔙 بازگشت", callback_data: "back:menu" }]];
+
+  for (let i = 0; i < genres.length; i += 2) {
+    const row = [];
+    row.push({
+      text: `${genres[i].name} (${genres[i].count})`,
+      callback_data: `genre:${i}:0`,
+    });
+    if (genres[i + 1]) {
+      row.push({
+        text: `${genres[i + 1].name} (${genres[i + 1].count})`,
+        callback_data: `genre:${i + 1}:0`,
+      });
+    }
+    rows.push(row);
+  }
+
+  return { genres, keyboard: { inline_keyboard: rows } };
+}
+
+async function buildGenreMoviesView(genreIndex, offset) {
+  const genres = await getGenreList();
+  const genre = genres[genreIndex];
+  if (!genre) return null;
+
+  const { items, hasMore } = await fetchMoviesByGenre(genre.name, offset);
+
+  const rows = [[{ text: "🔙 بازگشت", callback_data: "back:genres" }]];
+  for (const m of items) {
+    rows.push([
+      { text: shortenText(m.title || "بدون عنوان", 60), callback_data: `m:${m.id}` },
+    ]);
+  }
+  if (hasMore) {
+    rows.push([
+      {
+        text: "⏭ ۱۰ فیلم بعدی",
+        callback_data: `genre:${genreIndex}:${offset + LIST_PAGE_SIZE}`,
+      },
+    ]);
+  }
+
+  const text = items.length
+    ? `🎭 ژانر: ${genre.name}`
+    : `🎭 ژانر: ${genre.name}\nفیلمی پیدا نشد`;
+
+  return { text, keyboard: { inline_keyboard: rows } };
+}
+
+// ===================================================
 // /start
 // ===================================================
 
@@ -535,10 +714,158 @@ bot.start(async (ctx) => {
       return ctx.reply("Invalid movie link.");
     }
 
-    ctx.reply("🎬 نام فیلم را ارسال کنید");
+    ctx.reply(WELCOME_TEXT, { reply_markup: MAIN_MENU_REPLY_MARKUP });
 
   } catch (e) {
     console.error("START ERROR:", e.message);
+  }
+});
+
+// ===================================================
+// دکمه‌های منوی اصلی (متن‌های ثابت روی کیبورد پایین چت)
+// ===================================================
+
+bot.hears(BTN_NEWEST, async (ctx) => {
+  if (ctx.chat.type !== "private") return;
+
+  try {
+    await upsertSubscriber(ctx.chat, "menu_newest");
+
+    const movies = await fetchNewestMovies();
+    if (!movies.length) {
+      return ctx.reply("❌ فیلمی پیدا نشد");
+    }
+
+    await ctx.reply("🆕 جدیدترین‌ها:", {
+      reply_markup: movieListKeyboard(movies),
+    });
+  } catch (err) {
+    console.error("NEWEST MENU ERROR:", err.message);
+  }
+});
+
+bot.hears(BTN_POPULAR, async (ctx) => {
+  if (ctx.chat.type !== "private") return;
+
+  try {
+    await upsertSubscriber(ctx.chat, "menu_popular");
+
+    const movies = await fetchPopularMoviesList();
+    if (!movies.length) {
+      return ctx.reply("❌ فیلمی پیدا نشد");
+    }
+
+    await ctx.reply("🔥 پردانلودترین‌ها:", {
+      reply_markup: movieListKeyboard(movies),
+    });
+  } catch (err) {
+    console.error("POPULAR MENU ERROR:", err.message);
+  }
+});
+
+bot.hears(BTN_GENRES, async (ctx) => {
+  if (ctx.chat.type !== "private") return;
+
+  try {
+    await upsertSubscriber(ctx.chat, "menu_genres");
+
+    const { genres, keyboard } = await buildGenresKeyboard();
+    if (!genres.length) {
+      return ctx.reply("❌ ژانری پیدا نشد");
+    }
+
+    await ctx.reply("🎭 ژانر مورد نظر را انتخاب کنید:", {
+      reply_markup: keyboard,
+    });
+  } catch (err) {
+    console.error("GENRES MENU ERROR:", err.message);
+  }
+});
+
+// ===================================================
+// دکمه‌های شیشه‌ای (callback_query) لیست‌های فیلم و ژانر
+// ===================================================
+
+bot.action(/^m:(\d+)$/, async (ctx) => {
+  try {
+    const id = Number(ctx.match[1]);
+
+    const { data: movie, error } = await supabase
+      .from("movies")
+      .select("id, title, cover, link")
+      .eq("id", id)
+      .single();
+
+    await ctx.answerCbQuery();
+
+    if (error || !movie) {
+      return ctx.reply("❌ فیلم پیدا نشد");
+    }
+
+    const payload = buildForwardPayloadFromChannelLink(movie.link);
+    if (!payload) {
+      return ctx.reply("❌ لینک این فیلم نامعتبر است");
+    }
+
+    await ctx.replyWithPhoto(movie.cover || undefined, {
+      caption: `🎬 ${movie.title}`,
+      reply_markup: {
+        inline_keyboard: [
+          [
+            {
+              text: "▶️ Go to file",
+              url: `https://t.me/${ctx.botInfo.username}?start=${payload}`,
+            },
+          ],
+        ],
+      },
+    });
+  } catch (err) {
+    console.error("MOVIE BUTTON ERROR:", err.message);
+  }
+});
+
+bot.action("back:menu", async (ctx) => {
+  try {
+    await ctx.answerCbQuery();
+    await ctx.deleteMessage();
+  } catch (err) {
+    // پیام قدیمی‌تر از حد مجاز حذف ممکن است شکست بخورد؛ مشکلی نیست
+  }
+});
+
+bot.action("back:genres", async (ctx) => {
+  try {
+    await ctx.answerCbQuery();
+
+    const { genres, keyboard } = await buildGenresKeyboard();
+    if (!genres.length) {
+      return ctx.reply("❌ ژانری پیدا نشد");
+    }
+
+    await ctx.editMessageText("🎭 ژانر مورد نظر را انتخاب کنید:", {
+      reply_markup: keyboard,
+    });
+  } catch (err) {
+    console.error("BACK GENRES ERROR:", err.message);
+  }
+});
+
+bot.action(/^genre:(\d+):(\d+)$/, async (ctx) => {
+  try {
+    await ctx.answerCbQuery();
+
+    const genreIndex = Number(ctx.match[1]);
+    const offset = Number(ctx.match[2]);
+
+    const view = await buildGenreMoviesView(genreIndex, offset);
+    if (!view) {
+      return ctx.reply("❌ لطفاً دوباره روی «ژانر‌ها» بزنید");
+    }
+
+    await ctx.editMessageText(view.text, { reply_markup: view.keyboard });
+  } catch (err) {
+    console.error("GENRE PAGE ERROR:", err.message);
   }
 });
 
