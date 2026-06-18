@@ -3,6 +3,7 @@ const { Telegraf } = require("telegraf");
 const { createClient } = require("@supabase/supabase-js");
 const crypto = require("crypto");
 const http = require("http");
+const https = require("https");
 
 // ===================================================
 // Init bot
@@ -36,18 +37,40 @@ const runtimeSubscribers = new Map();
 // ===================================================
 // دکمه‌های منوی اصلی (جدیدترین‌ها / پردانلودترین‌ها / ژانر‌ها)
 // ===================================================
+const BTN_ACCOUNT = "👤 حساب کاربری";
 const BTN_NEWEST = "🆕 جدیدترین‌ها";
 const BTN_POPULAR = "🔥 پردانلودترین‌ها";
 const BTN_GENRES = "🎭 ژانر‌ها";
+const BTN_FAVORITES = "❤️ فیلم‌های مورد علاقه";
+const BTN_SUPPORT = "📞 ارتباط با پشتیبانی";
+const SUPPORT_ADMIN_URL = "https://t.me/seyedmahdimousavi";
 
 const WELCOME_TEXT =
   "به فیلم‌چین خوش آمدید...\n" +
   "برای جست‌وجو نام فیلم را ارسال کنید یا از دکمه‌های زیر استفاده کنید";
 
 const MAIN_MENU_REPLY_MARKUP = {
-  keyboard: [[BTN_NEWEST, BTN_POPULAR], [BTN_GENRES]],
+  keyboard: [
+    [BTN_ACCOUNT],
+    [BTN_NEWEST, BTN_POPULAR],
+    [BTN_GENRES],
+    [BTN_FAVORITES],
+    [BTN_SUPPORT],
+  ],
   resize_keyboard: true,
 };
+
+// ===================================================
+// وضعیت ورود کاربران (نگهداری موقت در حافظه)
+// ===================================================
+const userLoginState = new Map();
+// کلید: chat_id  |  مقدار: { step: "username"|"password", username: string }
+
+const SITE_SUPABASE_URL = process.env.SUPABASE_URL;
+const SITE_SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY;
+
+// نگهداری session ورود کاربران (chat_id → { userId, username })
+const loggedInSessions = new Map();
 
 const LIST_PAGE_SIZE = 10;
 const POPULAR_LIST_LIMIT = 20;
@@ -783,6 +806,122 @@ bot.hears(BTN_GENRES, async (ctx) => {
 });
 
 // ===================================================
+// دکمه ارتباط با پشتیبانی
+// ===================================================
+
+bot.hears(BTN_SUPPORT, async (ctx) => {
+  if (ctx.chat.type !== "private") return;
+
+  await ctx.reply(
+    "📞 جهت ارتباط با پشتیبانی با آیدی زیر در ارتباط باشید:",
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "💬 ارتباط با ادمین", url: SUPPORT_ADMIN_URL }],
+        ],
+      },
+    }
+  );
+});
+
+// ===================================================
+// دکمه حساب کاربری
+// ===================================================
+
+bot.hears(BTN_ACCOUNT, async (ctx) => {
+  if (ctx.chat.type !== "private") return;
+
+  const chatId = String(ctx.chat.id);
+  userLoginState.set(chatId, { step: "username" });
+
+  await ctx.reply("👤 لطفاً نام کاربری (ایمیل) خود را وارد کنید:");
+});
+
+// ===================================================
+// دکمه فیلم‌های مورد علاقه
+// ===================================================
+
+bot.hears(BTN_FAVORITES, async (ctx) => {
+  if (ctx.chat.type !== "private") return;
+
+  const chatId = String(ctx.chat.id);
+  const session = loggedInSessions.get(chatId);
+
+  if (!session) {
+    return ctx.reply(
+      "⚠️ برای مشاهده فیلم‌های مورد علاقه ابتدا وارد حساب کاربری خود شوید.\n\nروی دکمه «👤 حساب کاربری» بزنید."
+    );
+  }
+
+  try {
+    // دریافت لیست علاقه‌مندی‌ها از Supabase
+    const { data: favs, error: favErr } = await supabase
+      .from("favorites")
+      .select("movie_id, created_at")
+      .eq("user_id", session.userId)
+      .order("created_at", { ascending: false });
+
+    if (favErr || !favs || !favs.length) {
+      return ctx.reply("❤️ هنوز هیچ فیلمی به مورد علاقه‌ها اضافه نکرده‌اید.");
+    }
+
+    const movieIds = favs.map((f) => f.movie_id);
+
+    const { data: movies, error: movErr } = await supabase
+      .from("movies")
+      .select("id, title, cover, link")
+      .in("id", movieIds);
+
+    if (movErr || !movies || !movies.length) {
+      return ctx.reply("❌ خطا در دریافت فیلم‌های مورد علاقه");
+    }
+
+    // مرتب‌سازی بر اساس ترتیب علاقه‌مندی
+    const movieMap = new Map(movies.map((m) => [String(m.id), m]));
+    const ordered = movieIds.map((id) => movieMap.get(String(id))).filter(Boolean);
+
+    await ctx.reply(`❤️ فیلم‌های مورد علاقه شما (${ordered.length} فیلم):`);
+
+    for (const m of ordered) {
+      const payload = buildForwardPayloadFromChannelLink(m.link);
+      if (!payload) continue;
+
+      try {
+        await ctx.replyWithPhoto(normalizeCover(m.cover) || undefined, {
+          caption: `🎬 ${m.title}`,
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "📥 دریافت فایل",
+                  url: `https://t.me/${botUsername}?start=${payload}`,
+                },
+              ],
+            ],
+          },
+        });
+      } catch {
+        await ctx.reply(`🎬 ${m.title}`, {
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "📥 دریافت فایل",
+                  url: `https://t.me/${botUsername}?start=${payload}`,
+                },
+              ],
+            ],
+          },
+        });
+      }
+    }
+  } catch (err) {
+    console.error("FAVORITES HANDLER ERROR:", err.message);
+    await ctx.reply("❌ خطایی رخ داد. لطفاً دوباره تلاش کنید.");
+  }
+});
+
+// ===================================================
 // دکمه‌های شیشه‌ای (callback_query) لیست‌های فیلم و ژانر
 // ===================================================
 
@@ -960,6 +1099,98 @@ bot.on("text", async (ctx) => {
   if (ctx.chat.type === "private") {
 
     if (text.startsWith("/")) return;
+
+    // ===================================================
+    // مدیریت مرحله‌ای ورود به حساب کاربری
+    // ===================================================
+    const chatId = String(ctx.chat.id);
+    const loginStep = userLoginState.get(chatId);
+
+    if (loginStep) {
+      // مرحله ۱: دریافت نام کاربری (ایمیل)
+      if (loginStep.step === "username") {
+        userLoginState.set(chatId, { step: "password", username: text });
+        return ctx.reply("🔑 رمز عبور خود را وارد کنید:");
+      }
+
+      // مرحله ۲: دریافت رمز عبور و بررسی
+      if (loginStep.step === "password") {
+        userLoginState.delete(chatId);
+        const email = loginStep.username;
+        const password = text;
+
+        try {
+          // بررسی بلاک بودن
+          const { data: blocked } = await supabase
+            .from("blocked_users")
+            .select("id")
+            .eq("email", email)
+            .maybeSingle();
+
+          if (blocked) {
+            return ctx.reply("🚫 این حساب کاربری مسدود شده است.");
+          }
+
+          // تلاش برای ورود از طریق Supabase Auth REST API
+          const authData = await new Promise((resolve, reject) => {
+            const postData = JSON.stringify({ email, password });
+            const urlObj = new URL(`${SITE_SUPABASE_URL}/auth/v1/token?grant_type=password`);
+            const options = {
+              hostname: urlObj.hostname,
+              path: urlObj.pathname + urlObj.search,
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "apikey": SITE_SUPABASE_KEY,
+                "Content-Length": Buffer.byteLength(postData),
+              },
+            };
+            const req = https.request(
+              options,
+              (res) => {
+                let data = "";
+                res.on("data", (chunk) => { data += chunk; });
+                res.on("end", () => {
+                  try { resolve({ ok: res.statusCode === 200, body: JSON.parse(data), status: res.statusCode }); }
+                  catch { resolve({ ok: false, body: {}, status: res.statusCode }); }
+                });
+              }
+            );
+            req.on("error", reject);
+            req.write(postData);
+            req.end();
+          });
+
+          if (!authData.ok || !authData.body?.access_token) {
+            return ctx.reply("❌ نام کاربری یا رمز عبور اشتباه است. دوباره تلاش کنید.\n\nروی «👤 حساب کاربری» بزنید.");
+          }
+
+          const userId = authData.body?.user?.id;
+          if (!userId) {
+            return ctx.reply("❌ خطا در ورود. لطفاً دوباره تلاش کنید.");
+          }
+
+          // دریافت اطلاعات کاربر از جدول users
+          const { data: dbUser } = await supabase
+            .from("users")
+            .select("username, email")
+            .eq("id", userId)
+            .maybeSingle();
+
+          const username = dbUser?.username || email;
+
+          // ذخیره session
+          loggedInSessions.set(chatId, { userId, username, email });
+
+          return ctx.reply(
+            `✅ ورود موفقیت‌آمیز!\n\n👤 خوش آمدید، ${username}\n\nاکنون می‌توانید از «❤️ فیلم‌های مورد علاقه» استفاده کنید.`
+          );
+        } catch (err) {
+          console.error("LOGIN FLOW ERROR:", err.message);
+          return ctx.reply("❌ خطا در ورود. لطفاً دوباره تلاش کنید.");
+        }
+      }
+    }
 
     try {
 
