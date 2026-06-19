@@ -833,25 +833,27 @@ if (url.pathname === "/debug") {
 if (url.pathname === "/setup" && request.method === "GET") {
   const webhookUrl = `${url.origin}/webhook`;
 
+  const res = await tgCall(env.BOT_TOKEN, "setWebhook", {
+    url: webhookUrl,
+    drop_pending_updates: true,
+    allowed_updates: [
+      "message",
+      "callback_query",
+      "inline_query",
+      "my_chat_member"
+    ]
+  });
+
   return new Response(
-    JSON.stringify(
-      {
-        webhookUrl,
-        botTokenExists: !!env.BOT_TOKEN,
-        botUsername: env.BOT_USERNAME,
-        sendSecretExists: !!env.SEND_SECRET,
-        kvExists: !!env.BOT_KV,
-      },
-      null,
-      2
-    ),
+    JSON.stringify(res, null, 2),
     {
       headers: {
-        "Content-Type": "application/json",
-      },
+        "Content-Type": "application/json"
+      }
     }
   );
 }
+
 
 
     // دریافت update از تلگرام
