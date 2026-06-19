@@ -810,6 +810,24 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
+if (url.pathname === "/debug") {
+  return new Response(
+    JSON.stringify(
+      {
+        envKeys: Object.keys(env),
+        botTokenExists: !!env.BOT_TOKEN,
+        sendSecretExists: !!env.SEND_SECRET,
+        kvExists: !!env.BOT_KV,
+      },
+      null,
+      2
+    ),
+    {
+      headers: { "Content-Type": "application/json" },
+    }
+  );
+}
+
     // endpoint ثبت webhook (یک‌بار اجرا کن)
     // endpoint تست
 if (url.pathname === "/setup" && request.method === "GET") {
@@ -855,19 +873,3 @@ if (url.pathname === "/setup" && request.method === "GET") {
     ctx.waitUntil(runCronNotification(env));
   },
 };
-return new Response(
-  JSON.stringify(
-    {
-      envKeys: Object.keys(env),
-      webhookUrl,
-      botTokenExists: !!env.BOT_TOKEN,
-      sendSecretExists: !!env.SEND_SECRET,
-      kvExists: !!env.BOT_KV,
-    },
-    null,
-    2
-  ),
-  {
-    headers: { "Content-Type": "application/json" },
-  }
-);
