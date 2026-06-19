@@ -808,7 +808,6 @@ async function handleUpdate(update, env) {
 export default {
   // درخواست‌های HTTP (Webhook از تلگرام)
   async fetch(request, env) {
-    console.log("FETCH HIT");
     const url = new URL(request.url);
     
 
