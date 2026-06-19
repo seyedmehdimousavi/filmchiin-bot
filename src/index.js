@@ -566,7 +566,7 @@ async function handleUpdate(update, env) {
   const text   = msg.text?.trim() || "";
 
   // ثبت مشترک
-  await upsertSubscriber(supabase, chat, SUBSCRIBERS_TABLE, "message");
+  //await upsertSubscriber(supabase, chat, SUBSCRIBERS_TABLE, "message");
 
   // ===================================================
   // /start
