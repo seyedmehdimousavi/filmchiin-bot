@@ -857,15 +857,27 @@ if (url.pathname === "/setup" && request.method === "GET") {
 
 
     // دریافت update از تلگرام
-    if (url.pathname === "/webhook" && request.method === "POST") {
-      try {
-        const update = await request.json();
-        await handleUpdate(update, env);
-      } catch (err) {
-        console.error("WEBHOOK ERROR:", err.message);
-      }
-      return new Response("ok");
-    }
+if (url.pathname === "/webhook" && request.method === "POST") {
+  try {
+    const update = await request.json();
+
+    console.log("UPDATE:", JSON.stringify(update));
+
+    await handleUpdate(update, env);
+
+    console.log("HANDLE UPDATE OK");
+
+  } catch (err) {
+    console.error(
+      "WEBHOOK ERROR",
+      err?.message,
+      err?.stack,
+      JSON.stringify(err)
+    );
+  }
+
+  return new Response("ok");
+}
 
     return new Response("filmchiin-bot alive");
   },
