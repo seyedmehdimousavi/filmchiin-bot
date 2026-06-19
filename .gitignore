@@ -1,4 +1,4 @@
-node_modules
-.env
-*.zip
-*.rar
+node_modules/
+.wrangler/
+.dev.vars
+dist/

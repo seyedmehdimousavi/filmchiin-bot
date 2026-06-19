@@ -1,0 +1,30 @@
+name = "filmchiinbot"
+main = "src/index.js"
+compatibility_date = "2026-02-09"
+compatibility_flags = ["nodejs_compat"]
+
+# ===================================================
+# KV Namespace برای session کاربران و cursor نوتیفیکیشن
+# قبل از deploy باید بسازی:
+#   wrangler kv:namespace create BOT_KV
+# بعد id را اینجا بگذار
+# ===================================================
+[[kv_namespaces]]
+binding = "BOT_KV"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+
+# ===================================================
+# Cron Trigger: هر دقیقه یک‌بار فیلم‌های جدید بررسی می‌شود
+# ===================================================
+[triggers]
+crons = ["* * * * *"]
+
+# ===================================================
+# متغیرهای محیطی را با دستور زیر تنظیم کن (نه اینجا):
+#   wrangler secret put BOT_TOKEN
+#   wrangler secret put SEND_SECRET
+#   wrangler secret put SUPABASE_URL
+#   wrangler secret put SUPABASE_KEY
+#   wrangler secret put BOT_USERNAME
+# SUPABASE_SERVICE_KEY اختیاری است (اگر داری)
+# ===================================================
