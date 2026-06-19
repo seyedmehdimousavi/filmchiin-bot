@@ -1,6 +1,17 @@
 {
-  "name": "filmchiinbot",
+  "name": "filmchiin-bot",
   "main": "src/index.js",
   "compatibility_date": "2026-02-09",
-  "compatibility_flags": ["nodejs_compat"]
+  "compatibility_flags": ["nodejs_compat"],
+
+  "kv_namespaces": [
+    {
+      "binding": "BOT_KV",
+      "id": "4e95cb851df04c6fa0d583a15936cb66"
+    }
+  ],
+
+  "triggers": {
+    "crons": ["* * * * *"]
+  }
 }
