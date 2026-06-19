@@ -854,3 +854,19 @@ if (url.pathname === "/setup" && request.method === "GET") {
     ctx.waitUntil(runCronNotification(env));
   },
 };
+return new Response(
+  JSON.stringify(
+    {
+      envKeys: Object.keys(env),
+      webhookUrl,
+      botTokenExists: !!env.BOT_TOKEN,
+      sendSecretExists: !!env.SEND_SECRET,
+      kvExists: !!env.BOT_KV,
+    },
+    null,
+    2
+  ),
+  {
+    headers: { "Content-Type": "application/json" },
+  }
+);
