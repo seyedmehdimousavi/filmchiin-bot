@@ -79,7 +79,7 @@ const i18n = {
     BTN_POPULAR:   "🔥 Most Popular",
     BTN_GENRES:    "🎭 Genres",
     BTN_FAVORITES: "❤️ Favorites",
-    BTN_SUPPORT:   "📞 Support",
+    BTN_SUPPORT:   "📞 contact us",
     BTN_DONATE:    "💙 Support Us",
     BTN_LANGUAGE:  "🌐 زبان / Language",
 
@@ -106,7 +106,7 @@ const i18n = {
     ERROR_RETRY:      "❌ An error occurred. Please try again.",
     SEARCH_HINT:      "❌ Enter a movie name",
 
-    SUPPORT_TEXT: "📞 Contact support via the ID below:",
+    SUPPORT_TEXT: "📞 Contact us via the ID below:",
     SUPPORT_BTN:  "💬 Contact Admin",
 
     DONATE_MSG:
