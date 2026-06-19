@@ -835,6 +835,7 @@ if (url.pathname === "/setup" && request.method === "GET") {
   );
 }
 
+
     // دریافت update از تلگرام
     if (url.pathname === "/webhook" && request.method === "POST") {
       try {
