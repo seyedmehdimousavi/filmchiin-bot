@@ -63,6 +63,10 @@ const i18n = {
     LOGIN_ERROR:    "❌ نام کاربری یا رمز عبور اشتباه است. دوباره تلاش کنید.\n\nروی «👤 حساب کاربری» بزنید.",
     LOGIN_ID_ERROR: "❌ خطا در ورود. لطفاً دوباره تلاش کنید.",
     LOGIN_OK:       (u) => `✅ ورود موفقیت‌آمیز!\n\n👤 خوش آمدید، ${u}\n\nاکنون می‌توانید از «❤️ فیلم‌های مورد علاقه» استفاده کنید.`,
+    ACCOUNT_INFO:   (u) => `**نام کاربری:**\n${u}\n\n\nجهت خروج از حساب کاربری روی\n/logout\nکلیک کنید.`,
+    LOGOUT_OK:      "✅ با موفقیت از حساب کاربری خارج شدید.",
+    BTN_ACCOUNT_LOGGED: (u) => `👤 حساب کاربری ✅ (${u})`,
+    CHANNEL_BTN:    "📢 Channel",
 
     LOGIN_REQUIRED:
       "⚠️ برای مشاهده فیلم‌های مورد علاقه ابتدا وارد حساب کاربری خود شوید.\n\nروی دکمه «👤 حساب کاربری» بزنید.",
@@ -122,6 +126,10 @@ const i18n = {
     LOGIN_ERROR:    "❌ Wrong username or password. Please try again.\n\nTap «👤 Account».",
     LOGIN_ID_ERROR: "❌ Login error. Please try again.",
     LOGIN_OK:       (u) => `✅ Login successful!\n\n👤 Welcome, ${u}\n\nYou can now use «❤️ Favorites».`,
+    ACCOUNT_INFO:   (u) => `**Username:**\n${u}\n\n\nTo log out, tap\n/logout`,
+    LOGOUT_OK:      "✅ You have been successfully logged out.",
+    BTN_ACCOUNT_LOGGED: (u) => `👤 Account ✅ (${u})`,
+    CHANNEL_BTN:    "📢 Channel",
 
     LOGIN_REQUIRED:
       "⚠️ Please log in first to view your favorites.\n\nTap the «👤 Account» button.",
@@ -165,12 +173,15 @@ async function setUserLang(kv, chatId, lang) {
 // ساخت کیبورد اصلی بر اساس زبان
 // ===================================================
 
-function buildMainMenuMarkup(lang) {
+function buildMainMenuMarkup(lang, session) {
+  const accountBtn = session
+    ? t(lang, "BTN_ACCOUNT_LOGGED", session.username)
+    : t(lang, "BTN_ACCOUNT");
+
   return {
     keyboard: [
-      [t(lang, "BTN_ACCOUNT")],
-      [t(lang, "BTN_NEWEST"), t(lang, "BTN_POPULAR")],
-      [t(lang, "BTN_GENRES")],
+      [accountBtn],
+      [t(lang, "BTN_GENRES"), t(lang, "BTN_NEWEST"), t(lang, "BTN_POPULAR")],
       [t(lang, "BTN_FAVORITES")],
       [t(lang, "BTN_SUPPORT"), t(lang, "BTN_DONATE")],
       [t(lang, "BTN_LANGUAGE")],
@@ -707,7 +718,7 @@ async function handleUpdate(update, env) {
       return send(chat.id, "Invalid movie link.");
     }
 
-    return send(chat.id, t(lang, "WELCOME"), { reply_markup: buildMainMenuMarkup(lang) });
+    return send(chat.id, t(lang, "WELCOME"), { reply_markup: buildMainMenuMarkup(lang, await getSession(kv, chatId)) });
   }
 
   // ===================================================
@@ -715,19 +726,39 @@ async function handleUpdate(update, env) {
   // ===================================================
   if (chat.type === "private") {
 
-    if (text.startsWith("/")) return;
+    if (text.startsWith("/")) {
+      // /logout
+      if (text === "/logout") {
+        const session = await getSession(kv, chatId);
+        if (session) {
+          await kv?.delete(`session:${chatId}`);
+        }
+        return send(chat.id, t(lang, "LOGOUT_OK"), { reply_markup: buildMainMenuMarkup(lang, null) });
+      }
+      return;
+    }
 
     // --- دکمه زبان ---
     if (text === i18n.fa.BTN_LANGUAGE || text === i18n.en.BTN_LANGUAGE) {
       const newLang = lang === "fa" ? "en" : "fa";
       await setUserLang(kv, chatId, newLang);
+      const newSession = await getSession(kv, chatId);
       return send(chat.id, t(newLang, "LANG_CHANGED"), {
-        reply_markup: buildMainMenuMarkup(newLang),
+        reply_markup: buildMainMenuMarkup(newLang, newSession),
       });
     }
 
+    const session = await getSession(kv, chatId);
+    const mainMenu = buildMainMenuMarkup(lang, session);
+
     // --- حساب کاربری ---
-    if (text === t(lang, "BTN_ACCOUNT")) {
+    if (
+      text === t(lang, "BTN_ACCOUNT") ||
+      (session && text === t(lang, "BTN_ACCOUNT_LOGGED", session.username))
+    ) {
+      if (session) {
+        return send(chat.id, t(lang, "ACCOUNT_INFO", session.username), { parse_mode: "Markdown" });
+      }
       await setLoginState(kv, chatId, { step: "username" });
       return send(chat.id, t(lang, "ENTER_EMAIL"));
     }
@@ -735,28 +766,33 @@ async function handleUpdate(update, env) {
     // --- جدیدترین‌ها ---
     if (text === t(lang, "BTN_NEWEST")) {
       const movies = await fetchNewestMovies(supabase);
-      if (!movies.length) return send(chat.id, t(lang, "NOT_FOUND"));
+      if (!movies.length) return send(chat.id, t(lang, "NOT_FOUND"), { reply_markup: mainMenu });
       return send(chat.id, t(lang, "NEWEST_TITLE"), { reply_markup: movieListKeyboard(movies, lang) });
     }
 
     // --- پردانلودترین‌ها ---
     if (text === t(lang, "BTN_POPULAR")) {
       const movies = await fetchPopularMoviesList(supabase);
-      if (!movies.length) return send(chat.id, t(lang, "NOT_FOUND"));
+      if (!movies.length) return send(chat.id, t(lang, "NOT_FOUND"), { reply_markup: mainMenu });
       return send(chat.id, t(lang, "POPULAR_TITLE"), { reply_markup: movieListKeyboard(movies, lang) });
     }
 
     // --- ژانر‌ها ---
     if (text === t(lang, "BTN_GENRES")) {
       const { genres, keyboard } = await buildGenresKeyboard(supabase, kv, lang);
-      if (!genres.length) return send(chat.id, t(lang, "GENRE_NOT_FOUND"));
+      if (!genres.length) return send(chat.id, t(lang, "GENRE_NOT_FOUND"), { reply_markup: mainMenu });
       return send(chat.id, t(lang, "GENRES_TITLE"), { reply_markup: keyboard });
     }
 
     // --- پشتیبانی ---
     if (text === t(lang, "BTN_SUPPORT")) {
       return send(chat.id, t(lang, "SUPPORT_TEXT"), {
-        reply_markup: { inline_keyboard: [[{ text: t(lang, "SUPPORT_BTN"), url: SUPPORT_ADMIN_URL }]] },
+        reply_markup: {
+          inline_keyboard: [[
+            { text: t(lang, "SUPPORT_BTN"), url: SUPPORT_ADMIN_URL },
+            { text: t(lang, "CHANNEL_BTN"), url: "https://t.me/filmchiin" },
+          ]],
+        },
       });
     }
 
@@ -764,17 +800,14 @@ async function handleUpdate(update, env) {
     if (text === t(lang, "BTN_DONATE")) {
       const donateMsg  = t(lang, "DONATE_MSG");
       const donateAddr = t(lang, "DONATE_ADDR");
-      // ارسال پیام اصلی با Bold
       await send(chat.id, donateMsg, { parse_mode: "Markdown" });
-      // ارسال آدرس به صورت Mono (قابل کپی در تلگرام)
       return send(chat.id, `\`${donateAddr}\``, { parse_mode: "Markdown" });
     }
 
     // --- علاقه‌مندی‌ها ---
     if (text === t(lang, "BTN_FAVORITES")) {
-      const session = await getSession(kv, chatId);
       if (!session) {
-        return send(chat.id, t(lang, "LOGIN_REQUIRED"));
+        return send(chat.id, t(lang, "LOGIN_REQUIRED"), { reply_markup: mainMenu });
       }
       const { data: favs, error: favErr } = await supabase
         .from("favorites")
@@ -836,7 +869,7 @@ async function handleUpdate(update, env) {
           const { data: dbUser } = await supabase.from("users").select("username, email").eq("id", userId).maybeSingle();
           const username = dbUser?.username || email;
           await setSession(kv, chatId, { userId, username, email });
-          return send(chat.id, t(lang, "LOGIN_OK", username));
+          return send(chat.id, t(lang, "LOGIN_OK", username), { reply_markup: buildMainMenuMarkup(lang, { username }) });
         } catch (err) {
           console.error("LOGIN ERROR:", err.message);
           return send(chat.id, t(lang, "LOGIN_ID_ERROR"));
@@ -857,7 +890,7 @@ async function handleUpdate(update, env) {
         if (!uniqueMap.has(key)) uniqueMap.set(key, m);
       }
       const results = Array.from(uniqueMap.values());
-      if (!results.length) return send(chat.id, t(lang, "NOT_FOUND"));
+      if (!results.length) return send(chat.id, t(lang, "NOT_FOUND"), { reply_markup: mainMenu });
       for (const m of results) {
         const payload = buildForwardPayloadFromChannelLink(m.link);
         if (!payload) continue;
@@ -868,8 +901,11 @@ async function handleUpdate(update, env) {
         }
         await send(chat.id, `🎬 ${m.title}`, { reply_markup: kb });
       }
+      // ارسال کیبورد اصلی در انتها تا همیشه قابل دسترس باشه
+      await send(chat.id, "─────────────", { reply_markup: mainMenu });
     } catch (err) {
       console.error("PRIVATE SEARCH ERROR:", err.message);
+      await send(chat.id, t(lang, "ERROR_RETRY"), { reply_markup: mainMenu });
     }
     return;
   }
