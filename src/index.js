@@ -75,6 +75,10 @@ const i18n = {
     FAVS_TITLE:   (n) => `❤️ فیلم‌های مورد علاقه شما (${n} فیلم):`,
     GET_FILE:     "📥 دریافت فایل",
     GO_TO_FILE:   "▶️ Go to file",
+    GET_ALL_EPISODES: "📥 دریافت همه اپیزودها",
+    EPISODES_TITLE: (title) => `📺 اپیزودهای ${title}:`,
+    EPISODE_LABEL: (n, title) => `قسمت ${n}: ${title}`,
+    NO_EPISODES: "❌ اپیزودی پیدا نشد",
   },
 
   en: {
@@ -138,6 +142,10 @@ const i18n = {
     FAVS_TITLE:   (n) => `❤️ Your favorites (${n} movies):`,
     GET_FILE:     "📥 Get File",
     GO_TO_FILE:   "▶️ Go to file",
+    GET_ALL_EPISODES: "📥 Get all episodes",
+    EPISODES_TITLE: (title) => `📺 ${title} episodes:`,
+    EPISODE_LABEL: (n, title) => `Episode ${n}: ${title}`,
+    NO_EPISODES: "❌ No episodes found",
   },
 };
 
@@ -279,6 +287,106 @@ function buildForwardPayloadFromChannelLink(rawLink) {
   return null;
 }
 
+
+function parseForwardPayload(payload) {
+  const parts = (payload || "").split("_");
+  if (parts.length !== 3 || parts[0] !== "forward") return null;
+  return {
+    from_chat_id: /^\d+$/.test(parts[1]) ? `-100${parts[1]}` : `@${parts[1]}`,
+    message_id: Number(parts[2]),
+  };
+}
+
+async function copyPayloadMessage(token, chatId, payload) {
+  const parsed = parseForwardPayload(payload);
+  if (!parsed) return null;
+  return tgCall(token, "copyMessage", {
+    chat_id: chatId,
+    from_chat_id: parsed.from_chat_id,
+    message_id: parsed.message_id,
+  });
+}
+
+function normalizeMovieType(row) {
+  const raw = String(row?.type || row?.movie_type || row?.content_type || row?.product || "").toLowerCase();
+  if (/collection|کالکشن|مجموعه/.test(raw)) return "collection";
+  if (/series|serial|سریال/.test(raw)) return "series";
+  return "movie";
+}
+
+function movieTitleWithType(row, lang) {
+  const title = shortenText(row?.title || t(lang, "NO_TITLE"), 56);
+  const type = normalizeMovieType(row);
+  if (type === "collection") return `${title} 🔹`;
+  if (type === "series") return `${title} 🔸`;
+  return title;
+}
+
+async function selectMovies(supabase, configure, limit = LIST_PAGE_SIZE) {
+  const selects = [
+    "id, title, link, type, movie_type, content_type, product",
+    "id, title, link, type, product",
+    "id, title, link, product",
+    "id, title, link",
+  ];
+  for (const columns of selects) {
+    const query = configure(supabase.from("movies").select(columns)).limit(limit);
+    const { data, error } = await query;
+    if (!error) return { data: (data || []).map(m => ({ ...m, _src: "movies" })), error: null };
+    if (!/column|schema cache|Could not find/i.test(error.message || "")) return { data: [], error };
+  }
+  return { data: [], error: new Error("Unable to select movies") };
+}
+
+async function fetchMovieById(supabase, id) {
+  const { data } = await selectMovies(supabase, q => q.eq("id", id), 1);
+  return data?.[0] || null;
+}
+
+async function fetchMoviesByIds(supabase, ids) {
+  if (!ids.length) return [];
+  const { data, error } = await selectMovies(supabase, q => q.in("id", ids), Math.max(ids.length, 1));
+  if (error) { console.error("MOVIES BY IDS:", error.message); return []; }
+  return data || [];
+}
+
+async function fetchMovieEpisodes(supabase, movieId) {
+  const movie = await fetchMovieById(supabase, movieId);
+  if (!movie) return [];
+  const episodes = [{ ...movie, _episodeIndex: 1, _src: "movies" }];
+  const relationColumns = ["movie_id", "movieId", "parent_id", "parentId"];
+  const itemSelects = [
+    "id, title, link, movie_id, created_at, episode_number",
+    "id, title, link, movie_id, created_at",
+    "id, title, link, created_at",
+  ];
+  for (const rel of relationColumns) {
+    for (const columns of itemSelects) {
+      const { data, error } = await supabase
+        .from("movie_items")
+        .select(columns)
+        .eq(rel, movieId)
+        .order("created_at", { ascending: true, nullsFirst: false });
+      if (!error) {
+        return episodes.concat((data || []).map((item, index) => ({ ...item, _episodeIndex: index + 2, _src: "movie_items" })));
+      }
+      if (!/column|schema cache|Could not find/i.test(error.message || "")) break;
+    }
+  }
+  return episodes;
+}
+
+function episodeKeyboard(episodes, movieId, lang, botUsername) {
+  const rows = [[{ text: t(lang, "BACK"), callback_data: "back:menu" }]];
+  for (const episode of episodes) {
+    const payload = buildForwardPayloadFromChannelLink(episode.link);
+    if (!payload) continue;
+    rows.push([{ text: t(lang, "EPISODE_LABEL", episode._episodeIndex, shortenText(episode.title || t(lang, "NO_TITLE"), 48)), url: `https://t.me/${botUsername}?start=${payload}` }]);
+  }
+  rows.push([{ text: t(lang, "GET_ALL_EPISODES"), callback_data: `all:m:${movieId}` }]);
+  return { inline_keyboard: rows };
+}
+
 // ===================================================
 // Secure token (با Web Crypto API سازگار با Workers)
 // ===================================================
@@ -356,38 +464,22 @@ async function markSubscriberInactive(supabase, chatId, subscribersTable) {
 // ===================================================
 
 async function fetchNewestMovies(supabase, limit = LIST_PAGE_SIZE) {
-  const { data, error } = await supabase
-    .from("movies")
-    .select("id, title")
-    .order("updated_at", { ascending: false, nullsFirst: false })
-    .order("created_at", { ascending: false })
-    .limit(limit);
+  const { data, error } = await selectMovies(supabase, q => q.order("updated_at", { ascending: false, nullsFirst: false }).order("created_at", { ascending: false }), limit);
   if (error) { console.error("NEWEST MOVIES:", error.message); return []; }
-  return (data || []).map(m => ({ ...m, _src: "movies" }));
+  return data || [];
 }
 
 async function fetchPopularMoviesList(supabase, limit = POPULAR_LIST_LIMIT) {
-  const { data, error } = await supabase
-    .from("movies")
-    .select("id, title")
-    .eq("is_popular", true)
-    .order("created_at", { ascending: false })
-    .limit(limit);
+  const { data, error } = await selectMovies(supabase, q => q.eq("is_popular", true).order("created_at", { ascending: false }), limit);
   if (error) { console.error("POPULAR MOVIES:", error.message); return []; }
-  return (data || []).map(m => ({ ...m, _src: "movies" }));
+  return data || [];
 }
 
 async function fetchMoviesByGenre(supabase, genreName, offset = 0, limit = LIST_PAGE_SIZE) {
   const pattern = `%${genreName}%`;
-  const { data, error } = await supabase
-    .from("movies")
-    .select("id, title")
-    .ilike("genre", pattern)
-    .order("updated_at", { ascending: false, nullsFirst: false })
-    .order("created_at", { ascending: false })
-    .range(offset, offset + limit);
+  const { data, error } = await selectMovies(supabase, q => q.ilike("genre", pattern).order("updated_at", { ascending: false, nullsFirst: false }).order("created_at", { ascending: false }).range(offset, offset + limit), limit + 1);
   if (error) { console.error("GENRE MOVIES:", error.message); return { items: [], hasMore: false }; }
-  const rows = (data || []).map(m => ({ ...m, _src: "movies" }));
+  const rows = data || [];
   return { items: rows.slice(0, limit), hasMore: rows.length > limit };
 }
 
@@ -425,11 +517,17 @@ async function getGenreList(supabase, kv, lang) {
 // Keyboard Builders (با پشتیبانی زبان)
 // ===================================================
 
-function movieListKeyboard(movies, lang) {
+function movieListKeyboard(movies, lang, botUsername = "Filmchinbot") {
   const rows = [[{ text: t(lang, "BACK"), callback_data: "back:menu" }]];
   for (const m of movies) {
-    const prefix = m._src === "movie_items" ? "mi" : "m";
-    rows.push([{ text: shortenText(m.title || t(lang, "NO_TITLE"), 60), callback_data: `${prefix}:${m.id}` }]);
+    const text = movieTitleWithType(m, lang);
+    const movieType = normalizeMovieType(m);
+    if (movieType === "collection" || movieType === "series") {
+      rows.push([{ text, callback_data: `eps:m:${m.id}` }]);
+      continue;
+    }
+    const payload = buildForwardPayloadFromChannelLink(m.link);
+    if (payload) rows.push([{ text, url: `https://t.me/${botUsername}?start=${payload}` }]);
   }
   return { inline_keyboard: rows };
 }
@@ -445,15 +543,21 @@ async function buildGenresKeyboard(supabase, kv, lang) {
   return { genres, keyboard: { inline_keyboard: rows } };
 }
 
-async function buildGenreMoviesView(supabase, kv, genreIndex, offset, lang) {
+async function buildGenreMoviesView(supabase, kv, genreIndex, offset, lang, envBotUsername = "Filmchinbot") {
   const genres = await getGenreList(supabase, kv, lang);
   const genre  = genres[genreIndex];
   if (!genre) return null;
   const { items, hasMore } = await fetchMoviesByGenre(supabase, genre.name, offset);
   const rows = [[{ text: t(lang, "BACK"), callback_data: "back:genres" }]];
   for (const m of items) {
-    const prefix = m._src === "movie_items" ? "mi" : "m";
-    rows.push([{ text: shortenText(m.title || t(lang, "NO_TITLE"), 60), callback_data: `${prefix}:${m.id}` }]);
+    const text = movieTitleWithType(m, lang);
+    const movieType = normalizeMovieType(m);
+    if (movieType === "collection" || movieType === "series") {
+      rows.push([{ text, callback_data: `eps:m:${m.id}` }]);
+      continue;
+    }
+    const payload = buildForwardPayloadFromChannelLink(m.link);
+    if (payload) rows.push([{ text, url: `https://t.me/${envBotUsername || "Filmchinbot"}?start=${payload}` }]);
   }
   if (hasMore) {
     rows.push([{ text: t(lang, "NEXT_PAGE"), callback_data: `genre:${genreIndex}:${offset + LIST_PAGE_SIZE}` }]);
@@ -623,6 +727,26 @@ async function handleUpdate(update, env) {
 
     await answer(cbq.id);
 
+    const epsMatch = data.match(/^eps:m:(\d+)$/);
+    if (epsMatch) {
+      const movieId = Number(epsMatch[1]);
+      const movie = await fetchMovieById(supabase, movieId);
+      if (!movie) return send(chat.id, t(lang, "MOVIE_NOT_FOUND"));
+      const episodes = await fetchMovieEpisodes(supabase, movieId);
+      if (!episodes.length) return send(chat.id, t(lang, "NO_EPISODES"));
+      return edit(chat.id, msgId, t(lang, "EPISODES_TITLE", movie.title || t(lang, "NO_TITLE")), { reply_markup: episodeKeyboard(episodes, movieId, lang, BOT_USERNAME) });
+    }
+
+    const allMatch = data.match(/^all:m:(\d+)$/);
+    if (allMatch) {
+      const episodes = await fetchMovieEpisodes(supabase, Number(allMatch[1]));
+      for (const episode of episodes) {
+        const payload = buildForwardPayloadFromChannelLink(episode.link);
+        if (payload) await copyPayloadMessage(BOT_TOKEN, chat.id, payload);
+      }
+      return;
+    }
+
     // m:<id>  یا  mi:<id> (movie_items)
     const mMatch = data.match(/^(m|mi):(\d+)$/);
     if (mMatch) {
@@ -641,12 +765,7 @@ async function handleUpdate(update, env) {
       if (!movie) return send(chat.id, t(lang, "MOVIE_NOT_FOUND"));
       const payload = buildForwardPayloadFromChannelLink(movie.link);
       if (!payload) return send(chat.id, t(lang, "INVALID_LINK"));
-      const cover = normalizeCover(movie.cover);
-      const kb    = { inline_keyboard: [[{ text: t(lang, "GO_TO_FILE"), url: `https://t.me/${BOT_USERNAME}?start=${payload}` }]] };
-      if (cover) {
-        return tgCall(BOT_TOKEN, "sendPhoto", { chat_id: chat.id, photo: cover, caption: `🎬 ${movie.title}`, reply_markup: kb });
-      }
-      return send(chat.id, `🎬 ${movie.title}`, { reply_markup: kb });
+      return copyPayloadMessage(BOT_TOKEN, chat.id, payload);
     }
 
     // back:menu
@@ -667,7 +786,7 @@ async function handleUpdate(update, env) {
     if (genreMatch) {
       const genreIndex = Number(genreMatch[1]);
       const offset     = Number(genreMatch[2]);
-      const view = await buildGenreMoviesView(supabase, kv, genreIndex, offset, lang);
+      const view = await buildGenreMoviesView(supabase, kv, genreIndex, offset, lang, BOT_USERNAME);
       if (!view) return send(chat.id, t(lang, "TRY_GENRES_AGAIN"));
       return edit(chat.id, msgId, view.text, { reply_markup: view.keyboard });
     }
@@ -724,19 +843,8 @@ async function handleUpdate(update, env) {
 
     if (payload.startsWith("forward_")) {
       const parts = payload.split("_");
-      if (parts.length === 3 && /^\d+$/.test(parts[1])) {
-        return tgCall(BOT_TOKEN, "forwardMessage", {
-          chat_id: chat.id,
-          from_chat_id: `-100${parts[1]}`,
-          message_id: Number(parts[2]),
-        });
-      }
-      if (parts.length === 3) {
-        return tgCall(BOT_TOKEN, "forwardMessage", {
-          chat_id: chat.id,
-          from_chat_id: `@${parts[1]}`,
-          message_id: Number(parts[2]),
-        });
+      if (parseForwardPayload(payload)) {
+        return copyPayloadMessage(BOT_TOKEN, chat.id, payload);
       }
       return send(chat.id, "Invalid movie link.");
     }
@@ -790,14 +898,14 @@ async function handleUpdate(update, env) {
     if (text === t(lang, "BTN_NEWEST")) {
       const movies = await fetchNewestMovies(supabase);
       if (!movies.length) return send(chat.id, t(lang, "NOT_FOUND"), { reply_markup: mainMenu });
-      return send(chat.id, t(lang, "NEWEST_TITLE"), { reply_markup: movieListKeyboard(movies, lang) });
+      return send(chat.id, t(lang, "NEWEST_TITLE"), { reply_markup: movieListKeyboard(movies, lang, BOT_USERNAME) });
     }
 
     // --- پردانلودترین‌ها ---
     if (text === t(lang, "BTN_POPULAR")) {
       const movies = await fetchPopularMoviesList(supabase);
       if (!movies.length) return send(chat.id, t(lang, "NOT_FOUND"), { reply_markup: mainMenu });
-      return send(chat.id, t(lang, "POPULAR_TITLE"), { reply_markup: movieListKeyboard(movies, lang) });
+      return send(chat.id, t(lang, "POPULAR_TITLE"), { reply_markup: movieListKeyboard(movies, lang, BOT_USERNAME) });
     }
 
     // --- ژانر‌ها ---
@@ -839,25 +947,11 @@ async function handleUpdate(update, env) {
         .order("created_at", { ascending: false });
       if (favErr || !favs?.length) return send(chat.id, t(lang, "FAVS_EMPTY"));
       const movieIds = favs.map(f => f.movie_id);
-      const { data: movies, error: movErr } = await supabase.from("movies").select("id, title, cover, link").in("id", movieIds);
-      if (movErr || !movies?.length) return send(chat.id, t(lang, "FAVS_ERROR"));
+      const movies = await fetchMoviesByIds(supabase, movieIds);
+      if (!movies?.length) return send(chat.id, t(lang, "FAVS_ERROR"));
       const movieMap = new Map(movies.map(m => [String(m.id), m]));
       const ordered  = movieIds.map(id => movieMap.get(String(id))).filter(Boolean);
-      await send(chat.id, t(lang, "FAVS_TITLE", ordered.length));
-      for (const m of ordered) {
-        const payload = buildForwardPayloadFromChannelLink(m.link);
-        if (!payload) continue;
-        const cover = normalizeCover(m.cover);
-        const kb    = { inline_keyboard: [[{ text: t(lang, "GET_FILE"), url: `https://t.me/${BOT_USERNAME}?start=${payload}` }]] };
-        if (cover) {
-          try {
-            await tgCall(BOT_TOKEN, "sendPhoto", { chat_id: chat.id, photo: cover, caption: `🎬 ${m.title}`, reply_markup: kb });
-            continue;
-          } catch {}
-        }
-        await send(chat.id, `🎬 ${m.title}`, { reply_markup: kb });
-      }
-      return;
+      return send(chat.id, t(lang, "FAVS_TITLE", ordered.length), { reply_markup: movieListKeyboard(ordered, lang, BOT_USERNAME) });
     }
 
     // --- مدیریت مرحله‌ای ورود ---
@@ -982,10 +1076,10 @@ async function handleUpdate(update, env) {
     const parts = payload.split("_");
     try {
       if (parts.length === 3 && /^\d+$/.test(parts[1])) {
-        return tgCall(BOT_TOKEN, "forwardMessage", { chat_id: chat.id, from_chat_id: `-100${parts[1]}`, message_id: Number(parts[2]) });
+        return copyPayloadMessage(BOT_TOKEN, chat.id, payload);
       }
       if (parts.length === 3) {
-        return tgCall(BOT_TOKEN, "forwardMessage", { chat_id: chat.id, from_chat_id: `@${parts[1]}`, message_id: Number(parts[2]) });
+        return copyPayloadMessage(BOT_TOKEN, chat.id, payload);
       }
     } catch (err) {
       console.error("SEND ERROR:", err.message);
