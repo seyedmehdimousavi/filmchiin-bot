@@ -49,11 +49,28 @@ const WELCOME_TEXT =
   "به فیلم‌چین خوش آمدید...\n" +
   "برای جست‌وجو نام فیلم را ارسال کنید یا از دکمه‌های زیر استفاده کنید";
 
+function buildMainMenu(chatId) {
+  const session = loggedInSessions.get(String(chatId));
+  const accountBtn = session
+    ? `✅ حساب کاربری (${session.username})`
+    : BTN_ACCOUNT;
+
+  return {
+    keyboard: [
+      [accountBtn],
+      [BTN_GENRES, BTN_NEWEST, BTN_POPULAR],
+      [BTN_FAVORITES],
+      [BTN_SUPPORT],
+    ],
+    resize_keyboard: true,
+  };
+}
+
+// نسخه پیش‌فرض برای مواقعی که chat_id نداریم
 const MAIN_MENU_REPLY_MARKUP = {
   keyboard: [
     [BTN_ACCOUNT],
-    [BTN_NEWEST, BTN_POPULAR],
-    [BTN_GENRES],
+    [BTN_GENRES, BTN_NEWEST, BTN_POPULAR],
     [BTN_FAVORITES],
     [BTN_SUPPORT],
   ],
@@ -552,9 +569,10 @@ function decodeSendToken(token) {
 // منوی فیلم‌ها (جدیدترین‌ها / پردانلودترین‌ها / ژانر‌ها)
 // ===================================================
 
-function isPersianToken(token) {
+function isValidGenreToken(token) {
   const clean = token.startsWith("#") ? token.slice(1) : token;
-  return clean.length > 0 && !/^[A-Za-z]/.test(clean);
+  // توکن‌های خالی یا فقط عدد را حذف کن؛ هم فارسی هم انگلیسی قبول باشه
+  return clean.length > 1 && !/^\d+$/.test(clean);
 }
 
 async function getGenreList() {
@@ -573,9 +591,9 @@ async function getGenreList() {
   const counts = {};
   for (const row of data || []) {
     if (!row.genre) continue;
-    for (const raw of row.genre.split(" ")) {
+    for (const raw of row.genre.split(/[\s,،]+/)) {
       const name = raw.trim();
-      if (!name || !isPersianToken(name)) continue;
+      if (!name || !isValidGenreToken(name)) continue;
       counts[name] = (counts[name] || 0) + 1;
     }
   }
@@ -737,10 +755,29 @@ bot.start(async (ctx) => {
       return ctx.reply("Invalid movie link.");
     }
 
-    ctx.reply(WELCOME_TEXT, { reply_markup: MAIN_MENU_REPLY_MARKUP });
+    ctx.reply(WELCOME_TEXT, { reply_markup: buildMainMenu(ctx.chat.id) });
 
   } catch (e) {
     console.error("START ERROR:", e.message);
+  }
+});
+
+// ===================================================
+// دستور /logout
+// ===================================================
+
+bot.command("logout", async (ctx) => {
+  if (ctx.chat.type !== "private") return;
+
+  const chatId = String(ctx.chat.id);
+  if (loggedInSessions.has(chatId)) {
+    loggedInSessions.delete(chatId);
+    userLoginState.delete(chatId);
+    await ctx.reply("✅ با موفقیت از حساب کاربری خارج شدید.", {
+      reply_markup: MAIN_MENU_REPLY_MARKUP,
+    });
+  } else {
+    await ctx.reply("⚠️ شما وارد حساب کاربری نشده‌اید.");
   }
 });
 
@@ -817,7 +854,10 @@ bot.hears(BTN_SUPPORT, async (ctx) => {
     {
       reply_markup: {
         inline_keyboard: [
-          [{ text: "💬 ارتباط با ادمین", url: SUPPORT_ADMIN_URL }],
+          [
+            { text: "💬 ارتباط با ادمین", url: SUPPORT_ADMIN_URL },
+            { text: "📢 Channel", url: "https://t.me/filmchiin" },
+          ],
         ],
       },
     }
@@ -828,12 +868,23 @@ bot.hears(BTN_SUPPORT, async (ctx) => {
 // دکمه حساب کاربری
 // ===================================================
 
-bot.hears(BTN_ACCOUNT, async (ctx) => {
+// هندلر حساب کاربری - هم دکمه پیش‌فرض هم دکمه با نام کاربری
+bot.hears(/^(👤 حساب کاربری|✅ حساب کاربری \(.+\))$/, async (ctx) => {
   if (ctx.chat.type !== "private") return;
 
   const chatId = String(ctx.chat.id);
-  userLoginState.set(chatId, { step: "username" });
+  const session = loggedInSessions.get(chatId);
 
+  // اگر کاربر لاگین است، اطلاعات حساب را نشان بده
+  if (session) {
+    return ctx.reply(
+      `*نام کاربری:*\n${session.username}\n\n\nجهت خروج از حساب کاربری روی\n/logout\nکلیک کنید.`,
+      { parse_mode: "Markdown" }
+    );
+  }
+
+  // اگر لاگین نیست، فرایند ورود را شروع کن
+  userLoginState.set(chatId, { step: "username" });
   await ctx.reply("👤 لطفاً نام کاربری (ایمیل) خود را وارد کنید:");
 });
 
@@ -929,15 +980,29 @@ bot.action(/^m:(\d+)$/, async (ctx) => {
   try {
     const id = Number(ctx.match[1]);
 
-    const { data: movie, error } = await supabase
+    await ctx.answerCbQuery();
+
+    // اول در جدول movies جستجو کن
+    let movie = null;
+    const { data: fromMovies } = await supabase
       .from("movies")
       .select("id, title, cover, link")
       .eq("id", id)
-      .single();
+      .maybeSingle();
 
-    await ctx.answerCbQuery();
+    if (fromMovies) {
+      movie = fromMovies;
+    } else {
+      // اگر پیدا نشد، در movie_items جستجو کن
+      const { data: fromItems } = await supabase
+        .from("movie_items")
+        .select("id, title, cover, link")
+        .eq("id", id)
+        .maybeSingle();
+      movie = fromItems;
+    }
 
-    if (error || !movie) {
+    if (!movie) {
       return ctx.reply("❌ فیلم پیدا نشد");
     }
 
@@ -946,19 +1011,50 @@ bot.action(/^m:(\d+)$/, async (ctx) => {
       return ctx.reply("❌ لینک این فیلم نامعتبر است");
     }
 
-    await ctx.replyWithPhoto(movie.cover || undefined, {
-      caption: `🎬 ${movie.title}`,
-      reply_markup: {
-        inline_keyboard: [
-          [
-            {
-              text: "▶️ Go to file",
-              url: `https://t.me/${ctx.botInfo.username}?start=${payload}`,
-            },
+    const cover = normalizeCover(movie.cover);
+    if (cover) {
+      try {
+        await ctx.replyWithPhoto(cover, {
+          caption: `🎬 ${movie.title}`,
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "▶️ Go to file",
+                  url: `https://t.me/${ctx.botInfo.username}?start=${payload}`,
+                },
+              ],
+            ],
+          },
+        });
+      } catch {
+        await ctx.reply(`🎬 ${movie.title}`, {
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "▶️ Go to file",
+                  url: `https://t.me/${ctx.botInfo.username}?start=${payload}`,
+                },
+              ],
+            ],
+          },
+        });
+      }
+    } else {
+      await ctx.reply(`🎬 ${movie.title}`, {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: "▶️ Go to file",
+                url: `https://t.me/${ctx.botInfo.username}?start=${payload}`,
+              },
+            ],
           ],
-        ],
-      },
-    });
+        },
+      });
+    }
   } catch (err) {
     console.error("MOVIE BUTTON ERROR:", err.message);
   }
@@ -1183,7 +1279,8 @@ bot.on("text", async (ctx) => {
           loggedInSessions.set(chatId, { userId, username, email });
 
           return ctx.reply(
-            `✅ ورود موفقیت‌آمیز!\n\n👤 خوش آمدید، ${username}\n\nاکنون می‌توانید از «❤️ فیلم‌های مورد علاقه» استفاده کنید.`
+            `✅ ورود موفقیت‌آمیز!\n\n👤 خوش آمدید، ${username}\n\nاکنون می‌توانید از «❤️ فیلم‌های مورد علاقه» استفاده کنید.`,
+            { reply_markup: buildMainMenu(chatId) }
           );
         } catch (err) {
           console.error("LOGIN FLOW ERROR:", err.message);
@@ -1218,7 +1315,9 @@ bot.on("text", async (ctx) => {
       let combined = [...(movies || []), ...(items || [])];
 
       if (!combined.length) {
-        return ctx.reply("❌ فیلمی پیدا نشد");
+        return ctx.reply("❌ فیلمی پیدا نشد", {
+          reply_markup: buildMainMenu(chatId),
+        });
       }
 
       // جلوگیری از تکراری‌ها (بر اساس title + link)
@@ -1232,25 +1331,64 @@ bot.on("text", async (ctx) => {
 
       const uniqueResults = Array.from(uniqueMap.values());
 
-      for (const m of uniqueResults) {
-
+      for (let i = 0; i < uniqueResults.length; i++) {
+        const m = uniqueResults[i];
         const payload = buildForwardPayloadFromChannelLink(m.link);
         if (!payload) continue;
 
-        await ctx.replyWithPhoto(m.cover || undefined, {
-  caption: `🎬 ${m.title}`,
-  reply_markup: {
-    inline_keyboard: [
-      [
-        {
-          text: "▶️ Go to file",
-          url: `https://t.me/${ctx.botInfo.username}?start=${payload}`,
-        },
-      ],
-    ],
-  },
-});
+        const isLast = i === uniqueResults.length - 1;
+        const msgOptions = {
+          caption: `🎬 ${m.title}`,
+          reply_markup: isLast
+            ? buildMainMenu(chatId)
+            : {
+                inline_keyboard: [
+                  [
+                    {
+                      text: "▶️ Go to file",
+                      url: `https://t.me/${ctx.botInfo.username}?start=${payload}`,
+                    },
+                  ],
+                ],
+              },
+        };
 
+        const cover = normalizeCover(m.cover);
+        if (cover) {
+          try {
+            await ctx.replyWithPhoto(cover, msgOptions);
+          } catch {
+            await ctx.reply(`🎬 ${m.title}`, {
+              reply_markup: isLast
+                ? buildMainMenu(chatId)
+                : {
+                    inline_keyboard: [
+                      [
+                        {
+                          text: "▶️ Go to file",
+                          url: `https://t.me/${ctx.botInfo.username}?start=${payload}`,
+                        },
+                      ],
+                    ],
+                  },
+            });
+          }
+        } else {
+          await ctx.reply(`🎬 ${m.title}`, {
+            reply_markup: isLast
+              ? buildMainMenu(chatId)
+              : {
+                  inline_keyboard: [
+                    [
+                      {
+                        text: "▶️ Go to file",
+                        url: `https://t.me/${ctx.botInfo.username}?start=${payload}`,
+                      },
+                    ],
+                  ],
+                },
+          });
+        }
       }
 
     } catch (err) {
