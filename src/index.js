@@ -453,7 +453,7 @@ function movieListKeyboard(movies, BOT_USERNAME, lang) {
   for (const m of movies) {
     const prefix = typePrefix(m.type);
     const label  = shortenText(prefix + (m.title || t(lang, "NO_TITLE")), 60);
-    if (isMultiEpisode(m.type)) {
+    if (m._src === "movies" && isMultiEpisode(m.type)) {
       // کالکشن/سریال → نمایش لیست اپیزودها
       rows.push([{ text: label, callback_data: `eps:${m.id}` }]);
     } else {
@@ -464,6 +464,100 @@ function movieListKeyboard(movies, BOT_USERNAME, lang) {
     }
   }
   return { inline_keyboard: rows };
+}
+
+
+async function fetchEpisodeRows(supabase, movieId, lang, botUsername) {
+  const { data: movie } = await supabase
+    .from("movies")
+    .select("id, title, type, link, cover")
+    .eq("id", movieId)
+    .maybeSingle();
+  if (!movie) return null;
+
+  const { data: eps } = await supabase
+    .from("movie_items")
+    .select("id, title, link")
+    .eq("movie_id", movieId)
+    .order("order_index", { ascending: true });
+
+  const rows = [];
+  const ep1Payload = buildForwardPayloadFromChannelLink(movie.link);
+  if (ep1Payload) {
+    rows.push([{ text: shortenText(movie.title || t(lang, "NO_TITLE"), 60), url: `https://t.me/${botUsername}?start=${ep1Payload}` }]);
+  }
+  for (const ep of (eps || [])) {
+    const epPayload = buildForwardPayloadFromChannelLink(ep.link);
+    if (!epPayload) continue;
+    rows.push([{ text: shortenText(ep.title || t(lang, "NO_TITLE"), 60), url: `https://t.me/${botUsername}?start=${epPayload}` }]);
+  }
+  rows.push([{ text: t(lang, "EP_ALL_BTN"), callback_data: `eps_all:${movieId}` }]);
+  return { movie, rows };
+}
+
+async function searchTable(supabase, table, search, limit) {
+  const select = table === "movies"
+    ? "id, title, cover, link, type, synopsis, stars, director, genre, product"
+    : "id, movie_id, title, cover, link, type, synopsis, stars, director, genre, product";
+  const { data } = await applySearch(supabase.from(table).select(select).limit(limit), search);
+  return data || [];
+}
+
+function searchHaystack(row) {
+  return [row.title, row.synopsis, row.stars, row.director]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+async function searchMoviesAndItems(supabase, query, limit = 10) {
+  const baseSearch = buildSearchConfig(query);
+  const tokens = baseSearch.value.split(/\s+/).filter(Boolean).slice(0, 5);
+  const searches = [baseSearch];
+  if (!baseSearch.isHashtag && tokens.length > 1) {
+    for (const token of tokens) searches.push({ isHashtag: false, value: sanitize(token) });
+  }
+
+  const found = [];
+  const seen = new Set();
+  for (const search of searches) {
+    const [movies, items] = await Promise.all([
+      searchTable(supabase, "movies", search, limit),
+      searchTable(supabase, "movie_items", search, limit),
+    ]);
+    for (const m of movies) {
+      const key = `m:${m.id}`;
+      if (!seen.has(key)) { seen.add(key); found.push({ ...m, _src: "movies" }); }
+    }
+    for (const item of items) {
+      const key = `mi:${item.id}`;
+      if (!seen.has(key)) { seen.add(key); found.push({ ...item, _src: "movie_items" }); }
+    }
+  }
+
+  if (!baseSearch.isHashtag && tokens.length > 1) {
+    const lowerTokens = tokens.map(t => t.toLowerCase());
+    found.sort((a, b) => {
+      const aText = searchHaystack(a);
+      const bText = searchHaystack(b);
+      const aScore = lowerTokens.filter(token => aText.includes(token)).length;
+      const bScore = lowerTokens.filter(token => bText.includes(token)).length;
+      return bScore - aScore;
+    });
+  }
+  return found.slice(0, limit);
+}
+
+async function sendPayloadFile(token, chatId, payload) {
+  const parts = payload.split("_");
+  if (parts[0] !== "forward" || parts.length !== 3) return false;
+  const fromId = /^\d+$/.test(parts[1]) ? `-100${parts[1]}` : `@${parts[1]}`;
+  const res = await tgCall(token, "copyMessage", {
+    chat_id: chatId,
+    from_chat_id: fromId,
+    message_id: Number(parts[2]),
+  });
+  return Boolean(res?.ok);
 }
 
 async function buildGenresKeyboard(supabase, kv, lang) {
@@ -486,7 +580,7 @@ async function buildGenreMoviesView(supabase, kv, genreIndex, offset, lang, BOT_
   for (const m of items) {
     const prefix = typePrefix(m.type);
     const label  = shortenText(prefix + (m.title || t(lang, "NO_TITLE")), 60);
-    if (isMultiEpisode(m.type)) {
+    if (m._src === "movies" && isMultiEpisode(m.type)) {
       rows.push([{ text: label, callback_data: `eps:${m.id}` }]);
     } else {
       const payload = buildForwardPayloadFromChannelLink(m.link);
@@ -677,31 +771,9 @@ async function handleUpdate(update, env) {
         .maybeSingle();
       if (!movie) return send(chat.id, t(lang, "MOVIE_NOT_FOUND"));
 
-      // دریافت اپیزودهای بعدی از movie_items
-      const { data: eps } = await supabase
-        .from("movie_items")
-        .select("id, title, link")
-        .eq("movie_id", movieId)
-        .order("order_index", { ascending: true });
-
-      const rows = [[{ text: t(lang, "EP_BACK"), callback_data: "back:menu" }]];
-
-      // اپیزود اول (از جدول movies)
-      const ep1Payload = buildForwardPayloadFromChannelLink(movie.link);
-      if (ep1Payload) {
-        rows.push([{ text: shortenText(movie.title || "اپیزود ۱", 60), url: `https://t.me/${BOT_USERNAME}?start=${ep1Payload}` }]);
-      }
-
-      // اپیزودهای بعدی (از movie_items)
-      for (const ep of (eps || [])) {
-        const epPayload = buildForwardPayloadFromChannelLink(ep.link);
-        if (!epPayload) continue;
-        rows.push([{ text: shortenText(ep.title || `اپیزود`, 60), url: `https://t.me/${BOT_USERNAME}?start=${epPayload}` }]);
-      }
-
-      // دکمه دریافت همه اپیزودها
-      rows.push([{ text: t(lang, "EP_ALL_BTN"), callback_data: `eps_all:${movieId}` }]);
-
+      const episodeView = await fetchEpisodeRows(supabase, movieId, lang, BOT_USERNAME);
+      if (!episodeView) return send(chat.id, t(lang, "MOVIE_NOT_FOUND"));
+      const rows = [[{ text: t(lang, "EP_BACK"), callback_data: "back:menu" }], ...episodeView.rows];
       const typeLabel = (movie.type || "").toLowerCase() === "collection" ? "🔹" : "🔸";
       return edit(chat.id, msgId, `${typeLabel} ${movie.title}`, { reply_markup: { inline_keyboard: rows } });
     }
@@ -738,20 +810,11 @@ async function handleUpdate(update, env) {
       for (const ep of allEps) {
         const payload = buildForwardPayloadFromChannelLink(ep.link);
         if (!payload) continue;
-        const parts = payload.split("_");
         try {
-          if (parts[0] === "forward" && parts.length === 3) {
-            const fromId = /^\d+$/.test(parts[1]) ? `-100${parts[1]}` : `@${parts[1]}`;
-            await tgCall(BOT_TOKEN, "copyMessage", {
-              chat_id: chat.id,
-              from_chat_id: fromId,
-              message_id: Number(parts[2]),
-            });
-            sentCount++;
-          }
+          if (await sendPayloadFile(BOT_TOKEN, chat.id, payload)) sentCount++;
         } catch {}
-        // تاخیر کوچک برای جلوگیری از rate limit
-        await new Promise(r => setTimeout(r, 300));
+        // ارسال مرحله‌ای مثل کلیک روی هر اپیزود، با فاصله یک ثانیه
+        await new Promise(r => setTimeout(r, 1000));
       }
 
       return send(chat.id, t(lang, "EP_SENT", sentCount));
@@ -775,7 +838,7 @@ async function handleUpdate(update, env) {
       if (!movie) return send(chat.id, t(lang, "MOVIE_NOT_FOUND"));
 
       // اگه کالکشن/سریال بود برو به لیست اپیزودها
-      if (isMultiEpisode(movie.type)) {
+      if (table === "movies" && isMultiEpisode(movie.type)) {
         // redirect به eps handler
         const fakeData = `eps:${movie.id}`;
         // ساخت keyboard اپیزودها
@@ -846,16 +909,11 @@ async function handleUpdate(update, env) {
     const q  = iq.query.trim();
     if (q.length < 2) return tgCall(BOT_TOKEN, "answerInlineQuery", { inline_query_id: iq.id, results: [], cache_time: 1 });
 
-    const search = buildSearchConfig(q);
-    // فقط از جدول movies سرچ کن
-    const { data: movies } = await applySearch(
-      supabase.from("movies").select("id, title, cover, link, type, synopsis, stars, director, genre, product").limit(10),
-      search
-    );
+    const found = await searchMoviesAndItems(supabase, q, 10);
 
     const results = [];
-    for (const m of (movies || [])) {
-      if (isMultiEpisode(m.type)) {
+    for (const m of found) {
+      if (m._src === "movies" && isMultiEpisode(m.type)) {
         // برای inline: لینک اپیزود اول را نشان بده و در پیام همه اپیزودها را
         const payload = buildForwardPayloadFromChannelLink(m.link);
         if (!payload) continue;
@@ -867,11 +925,7 @@ async function handleUpdate(update, env) {
           description: shortenText(m.synopsis || `${m.genre || ""} | ${m.product || ""} | ${m.stars || ""}`),
           thumb_url: m.cover,
           input_message_content: { message_text: `${typeLabel} ${m.title}` },
-          reply_markup: {
-            inline_keyboard: [[
-              { text: t("fa", "EP_ALL_BTN"), callback_data: `eps_all:${m.id}` },
-            ]],
-          },
+          reply_markup: { inline_keyboard: (await fetchEpisodeRows(supabase, m.id, "fa", BOT_USERNAME))?.rows || [[{ text: t("fa", "EP_ALL_BTN"), callback_data: `eps_all:${m.id}` }]] },
         });
       } else {
         const payload = buildForwardPayloadFromChannelLink(m.link);
@@ -1106,17 +1160,11 @@ async function handleUpdate(update, env) {
 
     // --- جست‌وجوی متنی (private) ---
     try {
-      const search = buildSearchConfig(text);
-      // فقط از جدول movies سرچ کن - اپیزودهای بعدی با movie_id به پرنت متصل هستند
-      const { data: movies } = await applySearch(
-        supabase.from("movies").select("id, title, cover, link, type, synopsis, stars, director, genre, product").limit(10),
-        search
-      );
-      const results = movies || [];
+      const results = await searchMoviesAndItems(supabase, text, 10);
       if (!results.length) return send(chat.id, t(lang, "NOT_FOUND"), { reply_markup: mainMenu });
 
       for (const m of results) {
-        if (isMultiEpisode(m.type)) {
+        if (m._src === "movies" && isMultiEpisode(m.type)) {
           // کالکشن/سریال: کاور + اسم + لیست اپیزودها
           const { data: eps } = await supabase
             .from("movie_items")
@@ -1179,17 +1227,11 @@ async function handleUpdate(update, env) {
     if (!query && msg.reply_to_message?.text) query = msg.reply_to_message.text.trim();
     if (!query) return send(chat.id, t(lang, "SEARCH_HINT"));
     try {
-      const search = buildSearchConfig(query);
-      // فقط از جدول movies سرچ کن
-      const { data: movies } = await applySearch(
-        supabase.from("movies").select("id, title, cover, link, type, synopsis, stars, director, genre, product").limit(10),
-        search
-      );
-      const results = movies || [];
+      const results = await searchMoviesAndItems(supabase, query, 10);
       if (!results.length) return send(chat.id, t(lang, "SEARCH_EMPTY"));
 
       for (const m of results) {
-        if (isMultiEpisode(m.type)) {
+        if (m._src === "movies" && isMultiEpisode(m.type)) {
           // کالکشن/سریال: کاور + اسم + لیست اپیزودها
           const { data: eps } = await supabase
             .from("movie_items")
