@@ -254,6 +254,11 @@ function isPersianToken(token) {
   return clean.length > 0 && !/^[A-Za-z]/.test(clean);
 }
 
+function isEnglishToken(token) {
+  const clean = token.startsWith("#") ? token.slice(1) : token;
+  return clean.length > 1 && /^[A-Za-z]/.test(clean);
+}
+
 // ===================================================
 // Forward Payload
 // ===================================================
@@ -358,7 +363,7 @@ async function fetchNewestMovies(supabase, limit = LIST_PAGE_SIZE) {
     .order("created_at", { ascending: false })
     .limit(limit);
   if (error) { console.error("NEWEST MOVIES:", error.message); return []; }
-  return data || [];
+  return (data || []).map(m => ({ ...m, _src: "movies" }));
 }
 
 async function fetchPopularMoviesList(supabase, limit = POPULAR_LIST_LIMIT) {
@@ -369,7 +374,7 @@ async function fetchPopularMoviesList(supabase, limit = POPULAR_LIST_LIMIT) {
     .order("created_at", { ascending: false })
     .limit(limit);
   if (error) { console.error("POPULAR MOVIES:", error.message); return []; }
-  return data || [];
+  return (data || []).map(m => ({ ...m, _src: "movies" }));
 }
 
 async function fetchMoviesByGenre(supabase, genreName, offset = 0, limit = LIST_PAGE_SIZE) {
@@ -382,23 +387,27 @@ async function fetchMoviesByGenre(supabase, genreName, offset = 0, limit = LIST_
     .order("created_at", { ascending: false })
     .range(offset, offset + limit);
   if (error) { console.error("GENRE MOVIES:", error.message); return { items: [], hasMore: false }; }
-  const rows = data || [];
+  const rows = (data || []).map(m => ({ ...m, _src: "movies" }));
   return { items: rows.slice(0, limit), hasMore: rows.length > limit };
 }
 
-async function getGenreList(supabase, kv) {
+async function getGenreList(supabase, kv, lang) {
+  const cacheKey = `genre_cache_${lang || "fa"}`;
   if (kv) {
-    const cached = await kv.get("genre_cache", "json");
-    if (cached) return cached;
+    try {
+      const cached = await kv.get(cacheKey, "json");
+      if (cached) return cached;
+    } catch {}
   }
   const { data, error } = await supabase.from("movies").select("genre");
   if (error) { console.error("GENRE LIST:", error.message); return []; }
   const counts = {};
+  const isTarget = lang === "en" ? isEnglishToken : isPersianToken;
   for (const row of data || []) {
     if (!row.genre) continue;
     for (const raw of row.genre.split(" ")) {
       const name = raw.trim();
-      if (!name || !isPersianToken(name)) continue;
+      if (!name || !isTarget(name)) continue;
       counts[name] = (counts[name] || 0) + 1;
     }
   }
@@ -406,7 +415,9 @@ async function getGenreList(supabase, kv) {
     .sort((a, b) => b[1] - a[1])
     .slice(0, GENRE_LIST_LIMIT)
     .map(([name, count]) => ({ name, count }));
-  if (kv) await kv.put("genre_cache", JSON.stringify(genres), { expirationTtl: 600 });
+  if (kv) {
+    try { await kv.put(cacheKey, JSON.stringify(genres), { expirationTtl: 600 }); } catch {}
+  }
   return genres;
 }
 
@@ -417,13 +428,14 @@ async function getGenreList(supabase, kv) {
 function movieListKeyboard(movies, lang) {
   const rows = [[{ text: t(lang, "BACK"), callback_data: "back:menu" }]];
   for (const m of movies) {
-    rows.push([{ text: shortenText(m.title || t(lang, "NO_TITLE"), 60), callback_data: `m:${m.id}` }]);
+    const prefix = m._src === "movie_items" ? "mi" : "m";
+    rows.push([{ text: shortenText(m.title || t(lang, "NO_TITLE"), 60), callback_data: `${prefix}:${m.id}` }]);
   }
   return { inline_keyboard: rows };
 }
 
 async function buildGenresKeyboard(supabase, kv, lang) {
-  const genres = await getGenreList(supabase, kv);
+  const genres = await getGenreList(supabase, kv, lang);
   const rows   = [[{ text: t(lang, "BACK"), callback_data: "back:menu" }]];
   for (let i = 0; i < genres.length; i += 2) {
     const row = [{ text: `${genres[i].name} (${genres[i].count})`, callback_data: `genre:${i}:0` }];
@@ -434,13 +446,14 @@ async function buildGenresKeyboard(supabase, kv, lang) {
 }
 
 async function buildGenreMoviesView(supabase, kv, genreIndex, offset, lang) {
-  const genres = await getGenreList(supabase, kv);
+  const genres = await getGenreList(supabase, kv, lang);
   const genre  = genres[genreIndex];
   if (!genre) return null;
   const { items, hasMore } = await fetchMoviesByGenre(supabase, genre.name, offset);
   const rows = [[{ text: t(lang, "BACK"), callback_data: "back:genres" }]];
   for (const m of items) {
-    rows.push([{ text: shortenText(m.title || t(lang, "NO_TITLE"), 60), callback_data: `m:${m.id}` }]);
+    const prefix = m._src === "movie_items" ? "mi" : "m";
+    rows.push([{ text: shortenText(m.title || t(lang, "NO_TITLE"), 60), callback_data: `${prefix}:${m.id}` }]);
   }
   if (hasMore) {
     rows.push([{ text: t(lang, "NEXT_PAGE"), callback_data: `genre:${genreIndex}:${offset + LIST_PAGE_SIZE}` }]);
@@ -610,12 +623,22 @@ async function handleUpdate(update, env) {
 
     await answer(cbq.id);
 
-    // m:<id>
-    const mMatch = data.match(/^m:(\d+)$/);
+    // m:<id>  یا  mi:<id> (movie_items)
+    const mMatch = data.match(/^(m|mi):(\d+)$/);
     if (mMatch) {
-      const id = Number(mMatch[1]);
-      const { data: movie, error } = await supabase.from("movies").select("id, title, cover, link").eq("id", id).single();
-      if (error || !movie) return send(chat.id, t(lang, "MOVIE_NOT_FOUND"));
+      const table = mMatch[1] === "mi" ? "movie_items" : "movies";
+      const id    = Number(mMatch[2]);
+      let movie = null;
+      // اول جدول مشخص‌شده رو چک کن
+      const { data: row1 } = await supabase.from(table).select("id, title, cover, link").eq("id", id).maybeSingle();
+      if (row1) movie = row1;
+      // اگه پیدا نشد جدول دیگه رو هم بگرد
+      if (!movie) {
+        const otherTable = table === "movies" ? "movie_items" : "movies";
+        const { data: row2 } = await supabase.from(otherTable).select("id, title, cover, link").eq("id", id).maybeSingle();
+        if (row2) movie = row2;
+      }
+      if (!movie) return send(chat.id, t(lang, "MOVIE_NOT_FOUND"));
       const payload = buildForwardPayloadFromChannelLink(movie.link);
       if (!payload) return send(chat.id, t(lang, "INVALID_LINK"));
       const cover = normalizeCover(movie.cover);
