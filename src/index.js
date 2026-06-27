@@ -712,6 +712,101 @@ async function setSession(kv, chatId, session) {
 }
 
 // ===================================================
+// جستجوی یکپارچه - مشترک بین هر سه روش سرچ
+// هر آیتمی که match بشه (چه movies چه movie_items) مستقیم برگردونده می‌شه
+// عین رفتار inline query
+// ===================================================
+
+async function searchAllSources(supabase, queryText, limit = 15) {
+  const search = buildSearchConfig(queryText);
+  const [{ data: moviesRaw }, { data: itemsRaw }] = await Promise.all([
+    applySearch(
+      supabase.from("movies").select("id, title, cover, link, synopsis, stars, director, genre, product, type").limit(limit),
+      search
+    ),
+    applySearch(
+      supabase.from("movie_items").select("id, title, cover, link, synopsis, stars, director, genre, product, movie_id").limit(limit),
+      search
+    ),
+  ]);
+
+  // ترکیب و dedup با کلید title+link (عین inline)
+  const seenKey = new Set();
+  const results = [];
+  for (const m of [...(moviesRaw || []), ...(itemsRaw || [])]) {
+    const key = `${m.title}||${m.link}`;
+    if (!seenKey.has(key)) {
+      seenKey.add(key);
+      results.push(m);
+    }
+  }
+  return results;
+}
+
+// ارسال یک نتیجه جستجو به صورت پیام
+// isGroup: اگه true باشه /send_token هم اضافه می‌شه (برای گروه‌ها)
+async function sendSearchResult(token, chatId, m, lang, botUsername, sendSecret, isGroup) {
+  const movieType = normalizeMovieType(m);
+  const cover     = normalizeCover(m.cover);
+
+  // کالکشن یا سریال که در movies هست: دکمه «مشاهده اپیزودها»
+  if ((movieType === "collection" || movieType === "series") && m.id && !m.movie_id) {
+    const kb = {
+      inline_keyboard: [[
+        { text: lang === "en" ? "📺 View Episodes" : "📺 مشاهده اپیزودها", callback_data: `eps:m:${m.id}` },
+      ]],
+    };
+    if (cover) {
+      try {
+        await tgCall(token, "sendPhoto", { chat_id: chatId, photo: cover, caption: `🎬 ${m.title}`, reply_markup: kb });
+        return;
+      } catch {}
+    }
+    await tgCall(token, "sendMessage", { chat_id: chatId, text: `🎬 ${m.title}`, reply_markup: kb });
+    return;
+  }
+
+  // اپیزود از movie_items که parent کالکشن/سریال داره
+  if (m.movie_id) {
+    const payload = buildForwardPayloadFromChannelLink(m.link);
+    if (!payload) return;
+    const rows = [[{ text: lang === "en" ? "▶️ Get this episode" : "▶️ دریافت این قسمت", url: `https://t.me/${botUsername}?start=${payload}` }]];
+    rows.push([{ text: lang === "en" ? "📺 Other episodes" : "📺 بقیه قسمت‌های این کالکشن", callback_data: `eps:m:${m.movie_id}` }]);
+    const kb = { inline_keyboard: rows };
+    let caption = `🎬 ${m.title}`;
+    if (isGroup) {
+      const sendTok = encodeSendToken(payload, sendSecret);
+      caption += `\n\n/send_${sendTok}`;
+    }
+    if (cover) {
+      try {
+        await tgCall(token, "sendPhoto", { chat_id: chatId, photo: cover, caption, reply_markup: kb });
+        return;
+      } catch {}
+    }
+    await tgCall(token, "sendMessage", { chat_id: chatId, text: caption, reply_markup: kb });
+    return;
+  }
+
+  // تک‌فیلم معمولی
+  const payload = buildForwardPayloadFromChannelLink(m.link);
+  if (!payload) return;
+  const kb = { inline_keyboard: [[{ text: lang === "en" ? "▶️ Go to file" : "▶️ Go to file", url: `https://t.me/${botUsername}?start=${payload}` }]] };
+  let caption = `🎬 ${m.title}`;
+  if (isGroup) {
+    const sendTok = encodeSendToken(payload, sendSecret);
+    caption += `\n\n/send_${sendTok}`;
+  }
+  if (cover) {
+    try {
+      await tgCall(token, "sendPhoto", { chat_id: chatId, photo: cover, caption, reply_markup: kb });
+      return;
+    } catch {}
+  }
+  await tgCall(token, "sendMessage", { chat_id: chatId, text: caption, reply_markup: kb });
+}
+
+// ===================================================
 // پردازش Webhook Update
 // ===================================================
 
@@ -856,13 +951,52 @@ async function handleUpdate(update, env) {
     const q  = iq.query.trim();
     if (q.length < 2) return tgCall(BOT_TOKEN, "answerInlineQuery", { inline_query_id: iq.id, results: [], cache_time: 1 });
 
-    const search = buildSearchConfig(q);
-    const moviesQuery = applySearch(supabase.from("movies").select("id, title, cover, link, synopsis, stars, director, genre, product").limit(10), search);
-    const itemsQuery  = applySearch(supabase.from("movie_items").select("id, title, cover, link, synopsis, stars, director, genre, product").limit(10), search);
-    const [{ data: movies }, { data: items }] = await Promise.all([moviesQuery, itemsQuery]);
-
+    const allResults = await searchAllSources(supabase, q);
     const results = [];
-    for (const m of [...(movies || []), ...(items || [])]) {
+
+    for (const m of allResults) {
+      const movieType = normalizeMovieType(m);
+
+      // کالکشن/سریال که در movies هست
+      if ((movieType === "collection" || movieType === "series") && m.id && !m.movie_id) {
+        results.push({
+          type: "article",
+          id: `res_${Math.random()}`,
+          title: `${movieTitleWithType(m, "fa")}`,
+          description: shortenText(m.synopsis || `${m.genre || ""} | ${m.product || ""} | ${m.stars || ""}`),
+          thumb_url: m.cover,
+          input_message_content: { message_text: `🎬 ${m.title}` },
+          reply_markup: {
+            inline_keyboard: [[
+              { text: "📺 مشاهده اپیزودها", callback_data: `eps:m:${m.id}` },
+            ]],
+          },
+        });
+        continue;
+      }
+
+      // اپیزود از movie_items
+      if (m.movie_id) {
+        const payload = buildForwardPayloadFromChannelLink(m.link);
+        if (!payload) continue;
+        results.push({
+          type: "article",
+          id: `res_${Math.random()}`,
+          title: m.title || t("fa", "NO_TITLE"),
+          description: shortenText(m.synopsis || `${m.genre || ""} | ${m.product || ""} | ${m.stars || ""}`),
+          thumb_url: m.cover,
+          input_message_content: { message_text: `🎬 ${m.title}` },
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "▶️ دریافت این قسمت", url: `https://t.me/${BOT_USERNAME}?start=${payload}` }],
+              [{ text: "📺 بقیه قسمت‌های این کالکشن", callback_data: `eps:m:${m.movie_id}` }],
+            ],
+          },
+        });
+        continue;
+      }
+
+      // تک‌فیلم معمولی
       const payload = buildForwardPayloadFromChannelLink(m.link);
       if (!payload) continue;
       results.push({
@@ -875,6 +1009,7 @@ async function handleUpdate(update, env) {
         reply_markup: { inline_keyboard: [[{ text: "▶️ Go to file", url: `https://t.me/${BOT_USERNAME}?start=${payload}` }]] },
       });
     }
+
     return tgCall(BOT_TOKEN, "answerInlineQuery", { inline_query_id: iq.id, results, cache_time: 1 });
   }
 
@@ -1050,85 +1185,11 @@ async function handleUpdate(update, env) {
 
     // --- جست‌وجوی متنی (private) ---
     try {
-      const search = buildSearchConfig(text);
-      const [{ data: moviesRaw }, { data: itemsRaw }] = await Promise.all([
-        applySearch(supabase.from("movies").select("id, title, cover, link, synopsis, stars, director, genre, product, type").limit(20), search),
-        applySearch(supabase.from("movie_items").select("id, title, cover, link, synopsis, stars, director, genre, product, movie_id").limit(20), search),
-      ]);
-
-      // ساخت map از movies برای دسترسی سریع
-      const moviesMap = new Map((moviesRaw || []).map(m => [String(m.id), m]));
-
-      // جمع‌آوری movie_id های اپیزودهایی که parent‌شان در نتایج movies نیست
-      const missingParentIds = [];
-      for (const item of (itemsRaw || [])) {
-        if (item.movie_id && !moviesMap.has(String(item.movie_id))) {
-          missingParentIds.push(item.movie_id);
-        }
-      }
-
-      // واکشی parent movies برای اپیزودهایی که در نتایج نیستند
-      let extraParents = [];
-      if (missingParentIds.length) {
-        const { data: parents } = await supabase
-          .from("movies")
-          .select("id, title, cover, link, synopsis, stars, director, genre, product, type")
-          .in("id", [...new Set(missingParentIds)]);
-        extraParents = parents || [];
-        for (const p of extraParents) moviesMap.set(String(p.id), p);
-      }
-
-      // ترکیب نتایج: ابتدا movies که مستقیماً match شدند،
-      // سپس parent‌های اپیزودهایی که match شدند (اگه قبلاً نیست)
-      const seenIds = new Set();
-      const results = [];
-
-      // ۱. همه movies که مستقیم match شدند
-      for (const m of (moviesRaw || [])) {
-        const key = String(m.id);
-        if (!seenIds.has(key)) { seenIds.add(key); results.push({ ...m, _src: "movies" }); }
-      }
-
-      // ۲. parent‌های اپیزودهایی که match شدند ولی parent در نتایج نبود
-      for (const item of (itemsRaw || [])) {
-        if (!item.movie_id) {
-          // اپیزود بدون parent - مستقل نمایش بده
-          const key = `item_${item.id}`;
-          if (!seenIds.has(key)) { seenIds.add(key); results.push({ ...item, _src: "movie_items" }); }
-        } else {
-          const parentKey = String(item.movie_id);
-          if (!seenIds.has(parentKey)) {
-            seenIds.add(parentKey);
-            const parent = moviesMap.get(parentKey);
-            if (parent) results.push({ ...parent, _src: "movies" });
-          }
-        }
-      }
-
+      const results = await searchAllSources(supabase, text);
       if (!results.length) return send(chat.id, t(lang, "NOT_FOUND"), { reply_markup: mainMenu });
-
       for (const m of results) {
-        const movieType = normalizeMovieType(m);
-        if (movieType === "collection" || movieType === "series") {
-          // کالکشن/سریال: دکمه inline برای نمایش اپیزودها
-          const cover = normalizeCover(m.cover);
-          const kb = { inline_keyboard: [[{ text: lang === "en" ? "📺 View Episodes" : "📺 مشاهده اپیزودها", callback_data: `eps:m:${m.id}` }]] };
-          if (cover) {
-            try { await tgCall(BOT_TOKEN, "sendPhoto", { chat_id: chat.id, photo: cover, caption: `🎬 ${m.title}`, reply_markup: kb }); continue; } catch {}
-          }
-          await send(chat.id, `🎬 ${m.title}`, { reply_markup: kb });
-          continue;
-        }
-        const payload = buildForwardPayloadFromChannelLink(m.link);
-        if (!payload) continue;
-        const cover = normalizeCover(m.cover);
-        const kb    = { inline_keyboard: [[{ text: t(lang, "GO_TO_FILE"), url: `https://t.me/${BOT_USERNAME}?start=${payload}` }]] };
-        if (cover) {
-          try { await tgCall(BOT_TOKEN, "sendPhoto", { chat_id: chat.id, photo: cover, caption: `🎬 ${m.title}`, reply_markup: kb }); continue; } catch {}
-        }
-        await send(chat.id, `🎬 ${m.title}`, { reply_markup: kb });
+        await sendSearchResult(BOT_TOKEN, chat.id, m, lang, BOT_USERNAME, SEND_SECRET, false);
       }
-      // ارسال کیبورد اصلی در انتها تا همیشه قابل دسترس باشه
       await send(chat.id, "─────────────", { reply_markup: mainMenu });
     } catch (err) {
       console.error("PRIVATE SEARCH ERROR:", err.message);
@@ -1148,73 +1209,10 @@ async function handleUpdate(update, env) {
     if (!query && msg.reply_to_message?.text) query = msg.reply_to_message.text.trim();
     if (!query) return send(chat.id, t(lang, "SEARCH_HINT"));
     try {
-      const search = buildSearchConfig(query);
-      const [{ data: moviesRaw }, { data: itemsRaw }] = await Promise.all([
-        applySearch(supabase.from("movies").select("id, title, cover, link, synopsis, stars, director, genre, product, type").limit(20), search),
-        applySearch(supabase.from("movie_items").select("id, title, cover, link, synopsis, stars, director, genre, product, movie_id").limit(20), search),
-      ]);
-
-      // ساخت map از movies برای دسترسی سریع
-      const moviesMap = new Map((moviesRaw || []).map(m => [String(m.id), m]));
-
-      // واکشی parent movies برای اپیزودهایی که در نتایج نیستند
-      const missingParentIds = [];
-      for (const item of (itemsRaw || [])) {
-        if (item.movie_id && !moviesMap.has(String(item.movie_id))) {
-          missingParentIds.push(item.movie_id);
-        }
-      }
-      if (missingParentIds.length) {
-        const { data: parents } = await supabase
-          .from("movies")
-          .select("id, title, cover, link, synopsis, stars, director, genre, product, type")
-          .in("id", [...new Set(missingParentIds)]);
-        for (const p of (parents || [])) moviesMap.set(String(p.id), p);
-      }
-
-      // ترکیب نتایج
-      const seenIds = new Set();
-      const results = [];
-      for (const m of (moviesRaw || [])) {
-        const key = String(m.id);
-        if (!seenIds.has(key)) { seenIds.add(key); results.push({ ...m, _src: "movies" }); }
-      }
-      for (const item of (itemsRaw || [])) {
-        if (!item.movie_id) {
-          const key = `item_${item.id}`;
-          if (!seenIds.has(key)) { seenIds.add(key); results.push({ ...item, _src: "movie_items" }); }
-        } else {
-          const parentKey = String(item.movie_id);
-          if (!seenIds.has(parentKey)) {
-            seenIds.add(parentKey);
-            const parent = moviesMap.get(parentKey);
-            if (parent) results.push({ ...parent, _src: "movies" });
-          }
-        }
-      }
-
+      const results = await searchAllSources(supabase, query);
       if (!results.length) return send(chat.id, t(lang, "SEARCH_EMPTY"));
       for (const m of results) {
-        const movieType = normalizeMovieType(m);
-        if (movieType === "collection" || movieType === "series") {
-          const cover = normalizeCover(m.cover);
-          const kb = { inline_keyboard: [[{ text: lang === "en" ? "📺 View Episodes" : "📺 مشاهده اپیزودها", callback_data: `eps:m:${m.id}` }]] };
-          if (cover) {
-            try { await tgCall(BOT_TOKEN, "sendPhoto", { chat_id: chat.id, photo: cover, caption: `🎬 ${m.title}`, reply_markup: kb }); continue; } catch {}
-          }
-          await send(chat.id, `🎬 ${m.title}`, { reply_markup: kb });
-          continue;
-        }
-        const payload = buildForwardPayloadFromChannelLink(m.link);
-        if (!payload) continue;
-        const token   = encodeSendToken(payload, SEND_SECRET);
-        const cover   = normalizeCover(m.cover);
-        const kb      = { inline_keyboard: [[{ text: t(lang, "GO_TO_FILE"), url: `https://t.me/${BOT_USERNAME}?start=${payload}` }]] };
-        const caption = `🎬 ${m.title}\n\n/send_${token}`;
-        if (cover) {
-          try { await tgCall(BOT_TOKEN, "sendPhoto", { chat_id: chat.id, photo: cover, caption, reply_markup: kb }); continue; } catch {}
-        }
-        await send(chat.id, caption, { reply_markup: kb });
+        await sendSearchResult(BOT_TOKEN, chat.id, m, lang, BOT_USERNAME, SEND_SECRET, true);
       }
     } catch (err) {
       console.error("GROUP SEARCH ERROR:", err.message);
