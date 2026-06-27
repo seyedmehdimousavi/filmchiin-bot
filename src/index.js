@@ -719,7 +719,7 @@ async function setSession(kv, chatId, session) {
 
 async function searchAllSources(supabase, queryText, limit = 15) {
   const search = buildSearchConfig(queryText);
-  const [{ data: moviesRaw }, { data: itemsRaw }] = await Promise.all([
+  const [moviesRes, itemsRes] = await Promise.all([
     applySearch(
       supabase.from("movies").select("id, title, cover, link, synopsis, stars, director, genre, product, type").limit(limit),
       search
@@ -730,10 +730,18 @@ async function searchAllSources(supabase, queryText, limit = 15) {
     ),
   ]);
 
+  if (moviesRes.error) console.error("SEARCH movies error:", moviesRes.error.message);
+  if (itemsRes.error) console.error("SEARCH movie_items error:", itemsRes.error.message);
+
+  const moviesRaw = moviesRes.data || [];
+  const itemsRaw  = itemsRes.data  || [];
+
+  console.log(`SEARCH "${queryText}": movies=${moviesRaw.length}, items=${itemsRaw.length}`);
+
   // ترکیب و dedup با کلید title+link (عین inline)
   const seenKey = new Set();
   const results = [];
-  for (const m of [...(moviesRaw || []), ...(itemsRaw || [])]) {
+  for (const m of [...moviesRaw, ...itemsRaw]) {
     const key = `${m.title}||${m.link}`;
     if (!seenKey.has(key)) {
       seenKey.add(key);
@@ -743,46 +751,43 @@ async function searchAllSources(supabase, queryText, limit = 15) {
   return results;
 }
 
-// ارسال یک نتیجه جستجو به صورت پیام
+// ارسال یک نتیجه جستجو به صورت پیام - منطق عین inline query
 // isGroup: اگه true باشه /send_token هم اضافه می‌شه (برای گروه‌ها)
 async function sendSearchResult(token, chatId, m, lang, botUsername, sendSecret, isGroup) {
-  const movieType = normalizeMovieType(m);
-  const cover     = normalizeCover(m.cover);
+  const cover = normalizeCover(m.cover);
 
-  // کالکشن یا سریال که در movies هست: دکمه «مشاهده اپیزودها»
-  if ((movieType === "collection" || movieType === "series") && m.id && !m.movie_id) {
+  // آیتمی که از movie_items آمده (اپیزود یک کالکشن/سریال)
+  if (m.movie_id) {
+    const payload = buildForwardPayloadFromChannelLink(m.link);
+    if (!payload) return;
+    const kb = {
+      inline_keyboard: [
+        [{ text: lang === "en" ? "▶️ Get this episode" : "▶️ دریافت این قسمت", url: `https://t.me/${botUsername}?start=${payload}` }],
+        [{ text: lang === "en" ? "📺 Other episodes" : "📺 بقیه قسمت‌های این کالکشن", callback_data: `eps:m:${m.movie_id}` }],
+      ],
+    };
+    let caption = `🎬 ${m.title}`;
+    if (isGroup) caption += `\n\n/send_${encodeSendToken(payload, sendSecret)}`;
+    if (cover) {
+      try { await tgCall(token, "sendPhoto", { chat_id: chatId, photo: cover, caption, reply_markup: kb }); return; } catch {}
+    }
+    await tgCall(token, "sendMessage", { chat_id: chatId, text: caption, reply_markup: kb });
+    return;
+  }
+
+  // آیتم از movies - ممکنه تک‌فیلم، کالکشن، یا سریال باشه
+  const movieType = normalizeMovieType(m);
+
+  if (movieType === "collection" || movieType === "series") {
+    // کالکشن/سریال: دکمه مشاهده اپیزودها
     const kb = {
       inline_keyboard: [[
         { text: lang === "en" ? "📺 View Episodes" : "📺 مشاهده اپیزودها", callback_data: `eps:m:${m.id}` },
       ]],
     };
+    const caption = `🎬 ${m.title}`;
     if (cover) {
-      try {
-        await tgCall(token, "sendPhoto", { chat_id: chatId, photo: cover, caption: `🎬 ${m.title}`, reply_markup: kb });
-        return;
-      } catch {}
-    }
-    await tgCall(token, "sendMessage", { chat_id: chatId, text: `🎬 ${m.title}`, reply_markup: kb });
-    return;
-  }
-
-  // اپیزود از movie_items که parent کالکشن/سریال داره
-  if (m.movie_id) {
-    const payload = buildForwardPayloadFromChannelLink(m.link);
-    if (!payload) return;
-    const rows = [[{ text: lang === "en" ? "▶️ Get this episode" : "▶️ دریافت این قسمت", url: `https://t.me/${botUsername}?start=${payload}` }]];
-    rows.push([{ text: lang === "en" ? "📺 Other episodes" : "📺 بقیه قسمت‌های این کالکشن", callback_data: `eps:m:${m.movie_id}` }]);
-    const kb = { inline_keyboard: rows };
-    let caption = `🎬 ${m.title}`;
-    if (isGroup) {
-      const sendTok = encodeSendToken(payload, sendSecret);
-      caption += `\n\n/send_${sendTok}`;
-    }
-    if (cover) {
-      try {
-        await tgCall(token, "sendPhoto", { chat_id: chatId, photo: cover, caption, reply_markup: kb });
-        return;
-      } catch {}
+      try { await tgCall(token, "sendPhoto", { chat_id: chatId, photo: cover, caption, reply_markup: kb }); return; } catch {}
     }
     await tgCall(token, "sendMessage", { chat_id: chatId, text: caption, reply_markup: kb });
     return;
@@ -791,17 +796,11 @@ async function sendSearchResult(token, chatId, m, lang, botUsername, sendSecret,
   // تک‌فیلم معمولی
   const payload = buildForwardPayloadFromChannelLink(m.link);
   if (!payload) return;
-  const kb = { inline_keyboard: [[{ text: lang === "en" ? "▶️ Go to file" : "▶️ Go to file", url: `https://t.me/${botUsername}?start=${payload}` }]] };
+  const kb = { inline_keyboard: [[{ text: "▶️ Go to file", url: `https://t.me/${botUsername}?start=${payload}` }]] };
   let caption = `🎬 ${m.title}`;
-  if (isGroup) {
-    const sendTok = encodeSendToken(payload, sendSecret);
-    caption += `\n\n/send_${sendTok}`;
-  }
+  if (isGroup) caption += `\n\n/send_${encodeSendToken(payload, sendSecret)}`;
   if (cover) {
-    try {
-      await tgCall(token, "sendPhoto", { chat_id: chatId, photo: cover, caption, reply_markup: kb });
-      return;
-    } catch {}
+    try { await tgCall(token, "sendPhoto", { chat_id: chatId, photo: cover, caption, reply_markup: kb }); return; } catch {}
   }
   await tgCall(token, "sendMessage", { chat_id: chatId, text: caption, reply_markup: kb });
 }
@@ -1188,7 +1187,11 @@ async function handleUpdate(update, env) {
       const results = await searchAllSources(supabase, text);
       if (!results.length) return send(chat.id, t(lang, "NOT_FOUND"), { reply_markup: mainMenu });
       for (const m of results) {
-        await sendSearchResult(BOT_TOKEN, chat.id, m, lang, BOT_USERNAME, SEND_SECRET, false);
+        try {
+          await sendSearchResult(BOT_TOKEN, chat.id, m, lang, BOT_USERNAME, SEND_SECRET, false);
+        } catch (e) {
+          console.error("PRIVATE SEARCH ITEM ERROR:", e.message, JSON.stringify(m));
+        }
       }
       await send(chat.id, "─────────────", { reply_markup: mainMenu });
     } catch (err) {
@@ -1212,7 +1215,11 @@ async function handleUpdate(update, env) {
       const results = await searchAllSources(supabase, query);
       if (!results.length) return send(chat.id, t(lang, "SEARCH_EMPTY"));
       for (const m of results) {
-        await sendSearchResult(BOT_TOKEN, chat.id, m, lang, BOT_USERNAME, SEND_SECRET, true);
+        try {
+          await sendSearchResult(BOT_TOKEN, chat.id, m, lang, BOT_USERNAME, SEND_SECRET, true);
+        } catch (e) {
+          console.error("GROUP SEARCH ITEM ERROR:", e.message, JSON.stringify(m));
+        }
       }
     } catch (err) {
       console.error("GROUP SEARCH ERROR:", err.message);
