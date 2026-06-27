@@ -308,9 +308,9 @@ async function copyPayloadMessage(token, chatId, payload) {
 }
 
 function normalizeMovieType(row) {
-  const raw = String(row?.type || row?.movie_type || row?.content_type || row?.product || "").toLowerCase();
+  const raw = String(row?.type || row?.movie_type || row?.content_type || "").toLowerCase().trim();
   if (/collection|کالکشن|مجموعه/.test(raw)) return "collection";
-  if (/series|serial|سریال/.test(raw)) return "series";
+  if (/serial|series|سریال/.test(raw)) return "series";
   return "movie";
 }
 
@@ -354,6 +354,16 @@ async function fetchMovieEpisodes(supabase, movieId) {
   const movie = await fetchMovieById(supabase, movieId);
   if (!movie) return [];
   const episodes = [{ ...movie, _episodeIndex: 1, _src: "movies" }];
+  // واکشی اپیزودهای بعدی از movie_items
+  const { data, error } = await supabase
+    .from("movie_items")
+    .select("id, title, link, movie_id, created_at")
+    .eq("movie_id", String(movieId))
+    .order("id", { ascending: true });
+  if (!error && data?.length) {
+    return episodes.concat(data.map((item, index) => ({ ...item, _episodeIndex: index + 2, _src: "movie_items" })));
+  }
+  // fallback: تلاش با ستون‌های دیگر
   const relationColumns = ["movie_id", "movieId", "parent_id", "parentId"];
   const itemSelects = [
     "id, title, link, movie_id, created_at, episode_number",
@@ -361,16 +371,17 @@ async function fetchMovieEpisodes(supabase, movieId) {
     "id, title, link, created_at",
   ];
   for (const rel of relationColumns) {
+    if (rel === "movie_id") continue; // قبلاً امتحان شد
     for (const columns of itemSelects) {
-      const { data, error } = await supabase
+      const { data: d2, error: e2 } = await supabase
         .from("movie_items")
         .select(columns)
-        .eq(rel, movieId)
+        .eq(rel, String(movieId))
         .order("created_at", { ascending: true, nullsFirst: false });
-      if (!error) {
-        return episodes.concat((data || []).map((item, index) => ({ ...item, _episodeIndex: index + 2, _src: "movie_items" })));
+      if (!e2) {
+        return episodes.concat((d2 || []).map((item, index) => ({ ...item, _episodeIndex: index + 2, _src: "movie_items" })));
       }
-      if (!/column|schema cache|Could not find/i.test(error.message || "")) break;
+      if (!/column|schema cache|Could not find/i.test(e2.message || "")) break;
     }
   }
   return episodes;
@@ -381,7 +392,14 @@ function episodeKeyboard(episodes, movieId, lang, botUsername) {
   for (const episode of episodes) {
     const payload = buildForwardPayloadFromChannelLink(episode.link);
     if (!payload) continue;
-    rows.push([{ text: t(lang, "EPISODE_LABEL", episode._episodeIndex, shortenText(episode.title || t(lang, "NO_TITLE"), 48)), url: `https://t.me/${botUsername}?start=${payload}` }]);
+    let label;
+    if (episode._episodeIndex === 1) {
+      // دکمه اول: اسم خود کالکشن/سریال
+      label = shortenText(episode.title || t(lang, "NO_TITLE"), 56);
+    } else {
+      label = t(lang, "EPISODE_LABEL", episode._episodeIndex, shortenText(episode.title || t(lang, "NO_TITLE"), 40));
+    }
+    rows.push([{ text: label, url: `https://t.me/${botUsername}?start=${payload}` }]);
   }
   rows.push([{ text: t(lang, "GET_ALL_EPISODES"), callback_data: `all:m:${movieId}` }]);
   return { inline_keyboard: rows };
@@ -727,22 +745,58 @@ async function handleUpdate(update, env) {
 
     await answer(cbq.id);
 
-    const epsMatch = data.match(/^eps:m:(\d+)$/);
+    const epsMatch = data.match(/^eps:m:(\S+)$/);
     if (epsMatch) {
-      const movieId = Number(epsMatch[1]);
+      const movieId = epsMatch[1];
       const movie = await fetchMovieById(supabase, movieId);
       if (!movie) return send(chat.id, t(lang, "MOVIE_NOT_FOUND"));
       const episodes = await fetchMovieEpisodes(supabase, movieId);
-      if (!episodes.length) return send(chat.id, t(lang, "NO_EPISODES"));
-      return edit(chat.id, msgId, t(lang, "EPISODES_TITLE", movie.title || t(lang, "NO_TITLE")), { reply_markup: episodeKeyboard(episodes, movieId, lang, BOT_USERNAME) });
+      const kb = episodeKeyboard(episodes, movieId, lang, BOT_USERNAME);
+      const titleText = t(lang, "EPISODES_TITLE", movie.title || t(lang, "NO_TITLE"));
+      const cover = normalizeCover(movie.cover);
+
+      // اگه پیام قبلی photo داشت، caption رو ویرایش کن وگرنه text رو
+      const prevMsg = cbq.message;
+      if (prevMsg?.photo?.length) {
+        try {
+          return await tgCall(BOT_TOKEN, "editMessageCaption", {
+            chat_id: chat.id,
+            message_id: msgId,
+            caption: titleText,
+            reply_markup: kb,
+          });
+        } catch {}
+      }
+
+      // اگه پیام قبلی text بود ولی کاور داریم، پیام قدیمی رو حذف و پیام جدید با عکس بفرست
+      if (cover) {
+        try { await tgCall(BOT_TOKEN, "deleteMessage", { chat_id: chat.id, message_id: msgId }); } catch {}
+        try {
+          return await tgCall(BOT_TOKEN, "sendPhoto", {
+            chat_id: chat.id,
+            photo: cover,
+            caption: titleText,
+            reply_markup: kb,
+          });
+        } catch {}
+      }
+
+      // fallback: ویرایش متنی
+      return edit(chat.id, msgId, titleText, { reply_markup: kb });
     }
 
-    const allMatch = data.match(/^all:m:(\d+)$/);
+    const allMatch = data.match(/^all:m:(\S+)$/);
     if (allMatch) {
-      const episodes = await fetchMovieEpisodes(supabase, Number(allMatch[1]));
+      const movieId = allMatch[1];
+      const episodes = await fetchMovieEpisodes(supabase, movieId);
+      if (!episodes.length) return send(chat.id, t(lang, "NO_EPISODES"));
       for (const episode of episodes) {
         const payload = buildForwardPayloadFromChannelLink(episode.link);
-        if (payload) await copyPayloadMessage(BOT_TOKEN, chat.id, payload);
+        if (payload) {
+          await copyPayloadMessage(BOT_TOKEN, chat.id, payload);
+          // تاخیر کوتاه بین ارسال‌ها تا flood control تلگرام
+          await new Promise(r => setTimeout(r, 300));
+        }
       }
       return;
     }
@@ -997,18 +1051,74 @@ async function handleUpdate(update, env) {
     // --- جست‌وجوی متنی (private) ---
     try {
       const search = buildSearchConfig(text);
-      const [{ data: movies }, { data: items }] = await Promise.all([
-        applySearch(supabase.from("movies").select("id, title, cover, link, synopsis, stars, director, genre, product").limit(10), search),
-        applySearch(supabase.from("movie_items").select("id, title, cover, link, synopsis, stars, director, genre, product").limit(10), search),
+      const [{ data: moviesRaw }, { data: itemsRaw }] = await Promise.all([
+        applySearch(supabase.from("movies").select("id, title, cover, link, synopsis, stars, director, genre, product, type").limit(20), search),
+        applySearch(supabase.from("movie_items").select("id, title, cover, link, synopsis, stars, director, genre, product, movie_id").limit(20), search),
       ]);
-      const uniqueMap = new Map();
-      for (const m of [...(movies || []), ...(items || [])]) {
-        const key = `${m.title}_${m.link}`;
-        if (!uniqueMap.has(key)) uniqueMap.set(key, m);
+
+      // ساخت map از movies برای دسترسی سریع
+      const moviesMap = new Map((moviesRaw || []).map(m => [String(m.id), m]));
+
+      // جمع‌آوری movie_id های اپیزودهایی که parent‌شان در نتایج movies نیست
+      const missingParentIds = [];
+      for (const item of (itemsRaw || [])) {
+        if (item.movie_id && !moviesMap.has(String(item.movie_id))) {
+          missingParentIds.push(item.movie_id);
+        }
       }
-      const results = Array.from(uniqueMap.values());
+
+      // واکشی parent movies برای اپیزودهایی که در نتایج نیستند
+      let extraParents = [];
+      if (missingParentIds.length) {
+        const { data: parents } = await supabase
+          .from("movies")
+          .select("id, title, cover, link, synopsis, stars, director, genre, product, type")
+          .in("id", [...new Set(missingParentIds)]);
+        extraParents = parents || [];
+        for (const p of extraParents) moviesMap.set(String(p.id), p);
+      }
+
+      // ترکیب نتایج: ابتدا movies که مستقیماً match شدند،
+      // سپس parent‌های اپیزودهایی که match شدند (اگه قبلاً نیست)
+      const seenIds = new Set();
+      const results = [];
+
+      // ۱. همه movies که مستقیم match شدند
+      for (const m of (moviesRaw || [])) {
+        const key = String(m.id);
+        if (!seenIds.has(key)) { seenIds.add(key); results.push({ ...m, _src: "movies" }); }
+      }
+
+      // ۲. parent‌های اپیزودهایی که match شدند ولی parent در نتایج نبود
+      for (const item of (itemsRaw || [])) {
+        if (!item.movie_id) {
+          // اپیزود بدون parent - مستقل نمایش بده
+          const key = `item_${item.id}`;
+          if (!seenIds.has(key)) { seenIds.add(key); results.push({ ...item, _src: "movie_items" }); }
+        } else {
+          const parentKey = String(item.movie_id);
+          if (!seenIds.has(parentKey)) {
+            seenIds.add(parentKey);
+            const parent = moviesMap.get(parentKey);
+            if (parent) results.push({ ...parent, _src: "movies" });
+          }
+        }
+      }
+
       if (!results.length) return send(chat.id, t(lang, "NOT_FOUND"), { reply_markup: mainMenu });
+
       for (const m of results) {
+        const movieType = normalizeMovieType(m);
+        if (movieType === "collection" || movieType === "series") {
+          // کالکشن/سریال: دکمه inline برای نمایش اپیزودها
+          const cover = normalizeCover(m.cover);
+          const kb = { inline_keyboard: [[{ text: lang === "en" ? "📺 View Episodes" : "📺 مشاهده اپیزودها", callback_data: `eps:m:${m.id}` }]] };
+          if (cover) {
+            try { await tgCall(BOT_TOKEN, "sendPhoto", { chat_id: chat.id, photo: cover, caption: `🎬 ${m.title}`, reply_markup: kb }); continue; } catch {}
+          }
+          await send(chat.id, `🎬 ${m.title}`, { reply_markup: kb });
+          continue;
+        }
         const payload = buildForwardPayloadFromChannelLink(m.link);
         if (!payload) continue;
         const cover = normalizeCover(m.cover);
@@ -1039,18 +1149,62 @@ async function handleUpdate(update, env) {
     if (!query) return send(chat.id, t(lang, "SEARCH_HINT"));
     try {
       const search = buildSearchConfig(query);
-      const [{ data: movies }, { data: items }] = await Promise.all([
-        applySearch(supabase.from("movies").select("id, title, cover, link, synopsis, stars, director, genre, product").limit(10), search),
-        applySearch(supabase.from("movie_items").select("id, title, cover, link, synopsis, stars, director, genre, product").limit(10), search),
+      const [{ data: moviesRaw }, { data: itemsRaw }] = await Promise.all([
+        applySearch(supabase.from("movies").select("id, title, cover, link, synopsis, stars, director, genre, product, type").limit(20), search),
+        applySearch(supabase.from("movie_items").select("id, title, cover, link, synopsis, stars, director, genre, product, movie_id").limit(20), search),
       ]);
-      const uniqueMap = new Map();
-      for (const m of [...(movies || []), ...(items || [])]) {
-        const key = `${m.title}_${m.link}`;
-        if (!uniqueMap.has(key)) uniqueMap.set(key, m);
+
+      // ساخت map از movies برای دسترسی سریع
+      const moviesMap = new Map((moviesRaw || []).map(m => [String(m.id), m]));
+
+      // واکشی parent movies برای اپیزودهایی که در نتایج نیستند
+      const missingParentIds = [];
+      for (const item of (itemsRaw || [])) {
+        if (item.movie_id && !moviesMap.has(String(item.movie_id))) {
+          missingParentIds.push(item.movie_id);
+        }
       }
-      const results = Array.from(uniqueMap.values());
+      if (missingParentIds.length) {
+        const { data: parents } = await supabase
+          .from("movies")
+          .select("id, title, cover, link, synopsis, stars, director, genre, product, type")
+          .in("id", [...new Set(missingParentIds)]);
+        for (const p of (parents || [])) moviesMap.set(String(p.id), p);
+      }
+
+      // ترکیب نتایج
+      const seenIds = new Set();
+      const results = [];
+      for (const m of (moviesRaw || [])) {
+        const key = String(m.id);
+        if (!seenIds.has(key)) { seenIds.add(key); results.push({ ...m, _src: "movies" }); }
+      }
+      for (const item of (itemsRaw || [])) {
+        if (!item.movie_id) {
+          const key = `item_${item.id}`;
+          if (!seenIds.has(key)) { seenIds.add(key); results.push({ ...item, _src: "movie_items" }); }
+        } else {
+          const parentKey = String(item.movie_id);
+          if (!seenIds.has(parentKey)) {
+            seenIds.add(parentKey);
+            const parent = moviesMap.get(parentKey);
+            if (parent) results.push({ ...parent, _src: "movies" });
+          }
+        }
+      }
+
       if (!results.length) return send(chat.id, t(lang, "SEARCH_EMPTY"));
       for (const m of results) {
+        const movieType = normalizeMovieType(m);
+        if (movieType === "collection" || movieType === "series") {
+          const cover = normalizeCover(m.cover);
+          const kb = { inline_keyboard: [[{ text: lang === "en" ? "📺 View Episodes" : "📺 مشاهده اپیزودها", callback_data: `eps:m:${m.id}` }]] };
+          if (cover) {
+            try { await tgCall(BOT_TOKEN, "sendPhoto", { chat_id: chat.id, photo: cover, caption: `🎬 ${m.title}`, reply_markup: kb }); continue; } catch {}
+          }
+          await send(chat.id, `🎬 ${m.title}`, { reply_markup: kb });
+          continue;
+        }
         const payload = buildForwardPayloadFromChannelLink(m.link);
         if (!payload) continue;
         const token   = encodeSendToken(payload, SEND_SECRET);
