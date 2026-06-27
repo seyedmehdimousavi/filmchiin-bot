@@ -756,6 +756,12 @@ async function searchAllSources(supabase, queryText, limit = 15) {
 async function sendSearchResult(token, chatId, m, lang, botUsername, sendSecret, isGroup) {
   const cover = normalizeCover(m.cover);
 
+  // helper: sendPhoto که اگه Telegram خطا برگردوند throw کنه
+  async function tryPhoto(body) {
+    const res = await tgCall(token, "sendPhoto", body);
+    if (!res?.ok) throw new Error(res?.description || "sendPhoto failed");
+  }
+
   // آیتمی که از movie_items آمده (اپیزود یک کالکشن/سریال)
   if (m.movie_id) {
     const payload = buildForwardPayloadFromChannelLink(m.link);
@@ -769,7 +775,7 @@ async function sendSearchResult(token, chatId, m, lang, botUsername, sendSecret,
     let caption = `🎬 ${m.title}`;
     if (isGroup) caption += `\n\n/send_${encodeSendToken(payload, sendSecret)}`;
     if (cover) {
-      try { await tgCall(token, "sendPhoto", { chat_id: chatId, photo: cover, caption, reply_markup: kb }); return; } catch {}
+      try { await tryPhoto({ chat_id: chatId, photo: cover, caption, reply_markup: kb }); return; } catch {}
     }
     await tgCall(token, "sendMessage", { chat_id: chatId, text: caption, reply_markup: kb });
     return;
@@ -787,7 +793,7 @@ async function sendSearchResult(token, chatId, m, lang, botUsername, sendSecret,
     };
     const caption = `🎬 ${m.title}`;
     if (cover) {
-      try { await tgCall(token, "sendPhoto", { chat_id: chatId, photo: cover, caption, reply_markup: kb }); return; } catch {}
+      try { await tryPhoto({ chat_id: chatId, photo: cover, caption, reply_markup: kb }); return; } catch {}
     }
     await tgCall(token, "sendMessage", { chat_id: chatId, text: caption, reply_markup: kb });
     return;
@@ -800,7 +806,7 @@ async function sendSearchResult(token, chatId, m, lang, botUsername, sendSecret,
   let caption = `🎬 ${m.title}`;
   if (isGroup) caption += `\n\n/send_${encodeSendToken(payload, sendSecret)}`;
   if (cover) {
-    try { await tgCall(token, "sendPhoto", { chat_id: chatId, photo: cover, caption, reply_markup: kb }); return; } catch {}
+    try { await tryPhoto({ chat_id: chatId, photo: cover, caption, reply_markup: kb }); return; } catch {}
   }
   await tgCall(token, "sendMessage", { chat_id: chatId, text: caption, reply_markup: kb });
 }
