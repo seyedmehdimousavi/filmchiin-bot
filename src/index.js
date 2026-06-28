@@ -1085,6 +1085,23 @@ async function handleUpdate(update, env) {
       return send(chat.id, "Invalid movie link.");
     }
 
+    // دریافت همه اپیزودهای یک کالکشن/سریال از طریق دکمه «دریافت همه اپیزودها» در سایت
+    // لینک سایت به شکل: https://t.me/<bot>?start=all_<movieId> است
+    if (payload.startsWith("all_")) {
+      const movieId = payload.slice(4);
+      const episodes = await fetchMovieEpisodes(supabase, movieId);
+      if (!episodes.length) return send(chat.id, t(lang, "NO_EPISODES"));
+      for (const episode of episodes) {
+        const epPayload = buildForwardPayloadFromChannelLink(episode.link);
+        if (epPayload) {
+          await copyPayloadMessage(BOT_TOKEN, chat.id, epPayload);
+          // تاخیر کوتاه بین ارسال‌ها تا flood control تلگرام
+          await new Promise(r => setTimeout(r, 300));
+        }
+      }
+      return;
+    }
+
     return send(chat.id, t(lang, "WELCOME"), { reply_markup: buildMainMenuMarkup(lang, await getSession(kv, chatId)) });
   }
 
