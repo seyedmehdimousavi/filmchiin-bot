@@ -751,15 +751,37 @@ async function searchAllSources(supabase, queryText, limit = 15) {
   return results;
 }
 
+// کم کردن حجم کاور از طریق wsrv.nl (رایگان، بدون نیاز به پلن خاص)
+// عرض 400px و فرمت webp → معمولاً زیر 50KB
+function resizeCoverUrl(url) {
+  if (!url || url === "#") return null;
+  // اگه data: URL یا فایل local بود دست نزن
+  if (url.startsWith("data:") || url.startsWith("/")) return url;
+  try {
+    // wsrv.nl: CDN رایگان برای resize تصویر
+    return `https://wsrv.nl/?url=${encodeURIComponent(url)}&w=400&output=webp&q=75`;
+  } catch {
+    return url;
+  }
+}
+
 // ارسال یک نتیجه جستجو به صورت پیام - منطق عین inline query
 // isGroup: اگه true باشه /send_token هم اضافه می‌شه (برای گروه‌ها)
 async function sendSearchResult(token, chatId, m, lang, botUsername, sendSecret, isGroup) {
-  const cover = normalizeCover(m.cover);
+  const coverRaw    = normalizeCover(m.cover);
+  const coverSmall  = resizeCoverUrl(coverRaw);
 
   // helper: sendPhoto که اگه Telegram خطا برگردوند throw کنه
+  // اول با کاور کوچک‌شده تلاش می‌کنه، اگه fail شد با URL اصلی
   async function tryPhoto(body) {
-    const res = await tgCall(token, "sendPhoto", body);
-    if (!res?.ok) throw new Error(res?.description || "sendPhoto failed");
+    // تلاش اول: کاور resize شده
+    if (coverSmall && coverSmall !== coverRaw) {
+      const r1 = await tgCall(token, "sendPhoto", { ...body, photo: coverSmall });
+      if (r1?.ok) return;
+    }
+    // تلاش دوم: URL اصلی
+    const r2 = await tgCall(token, "sendPhoto", { ...body, photo: coverRaw });
+    if (!r2?.ok) throw new Error(r2?.description || "sendPhoto failed");
   }
 
   // آیتمی که از movie_items آمده (اپیزود یک کالکشن/سریال)
@@ -774,8 +796,8 @@ async function sendSearchResult(token, chatId, m, lang, botUsername, sendSecret,
     };
     let caption = `🎬 ${m.title}`;
     if (isGroup) caption += `\n\n/send_${encodeSendToken(payload, sendSecret)}`;
-    if (cover) {
-      try { await tryPhoto({ chat_id: chatId, photo: cover, caption, reply_markup: kb }); return; } catch {}
+    if (coverRaw) {
+      try { await tryPhoto({ chat_id: chatId, caption, reply_markup: kb }); return; } catch {}
     }
     await tgCall(token, "sendMessage", { chat_id: chatId, text: caption, reply_markup: kb });
     return;
@@ -784,16 +806,37 @@ async function sendSearchResult(token, chatId, m, lang, botUsername, sendSecret,
   // آیتم از movies - ممکنه تک‌فیلم، کالکشن، یا سریال باشه
   const movieType = normalizeMovieType(m);
 
-  if (movieType === "collection" || movieType === "series") {
-    // کالکشن/سریال: دکمه مشاهده اپیزودها
+  if (movieType === "collection") {
+    // کالکشن: دکمه دریافت اپیزود اول + دکمه مشاهده همه اپیزودها
+    const payload = buildForwardPayloadFromChannelLink(m.link);
+    const rows = [];
+    if (payload) {
+      rows.push([{ text: lang === "en" ? "▶️ Get this episode" : "▶️ دریافت این قسمت", url: `https://t.me/${botUsername}?start=${payload}` }]);
+      if (isGroup) {
+        // برای گروه /send token هم اضافه میشه - در caption
+      }
+    }
+    rows.push([{ text: lang === "en" ? "📺 View Episodes" : "📺 مشاهده اپیزودها", callback_data: `eps:m:${m.id}` }]);
+    const kb = { inline_keyboard: rows };
+    let caption = `🎬 ${m.title}`;
+    if (isGroup && payload) caption += `\n\n/send_${encodeSendToken(payload, sendSecret)}`;
+    if (coverRaw) {
+      try { await tryPhoto({ chat_id: chatId, caption, reply_markup: kb }); return; } catch {}
+    }
+    await tgCall(token, "sendMessage", { chat_id: chatId, text: caption, reply_markup: kb });
+    return;
+  }
+
+  if (movieType === "series") {
+    // سریال: فقط دکمه مشاهده اپیزودها (بدون get this episode چون خواسته شد)
     const kb = {
       inline_keyboard: [[
         { text: lang === "en" ? "📺 View Episodes" : "📺 مشاهده اپیزودها", callback_data: `eps:m:${m.id}` },
       ]],
     };
     const caption = `🎬 ${m.title}`;
-    if (cover) {
-      try { await tryPhoto({ chat_id: chatId, photo: cover, caption, reply_markup: kb }); return; } catch {}
+    if (coverRaw) {
+      try { await tryPhoto({ chat_id: chatId, caption, reply_markup: kb }); return; } catch {}
     }
     await tgCall(token, "sendMessage", { chat_id: chatId, text: caption, reply_markup: kb });
     return;
@@ -805,8 +848,8 @@ async function sendSearchResult(token, chatId, m, lang, botUsername, sendSecret,
   const kb = { inline_keyboard: [[{ text: "▶️ Go to file", url: `https://t.me/${botUsername}?start=${payload}` }]] };
   let caption = `🎬 ${m.title}`;
   if (isGroup) caption += `\n\n/send_${encodeSendToken(payload, sendSecret)}`;
-  if (cover) {
-    try { await tryPhoto({ chat_id: chatId, photo: cover, caption, reply_markup: kb }); return; } catch {}
+  if (coverRaw) {
+    try { await tryPhoto({ chat_id: chatId, caption, reply_markup: kb }); return; } catch {}
   }
   await tgCall(token, "sendMessage", { chat_id: chatId, text: caption, reply_markup: kb });
 }
@@ -853,9 +896,10 @@ async function handleUpdate(update, env) {
       const episodes = await fetchMovieEpisodes(supabase, movieId);
       const kb = episodeKeyboard(episodes, movieId, lang, BOT_USERNAME);
       const titleText = t(lang, "EPISODES_TITLE", movie.title || t(lang, "NO_TITLE"));
-      const cover = normalizeCover(movie.cover);
+      const coverRaw   = normalizeCover(movie.cover);
+      const coverSmall = resizeCoverUrl(coverRaw);
 
-      // اگه پیام قبلی photo داشت، caption رو ویرایش کن وگرنه text رو
+      // اگه پیام قبلی photo داشت، caption رو ویرایش کن
       const prevMsg = cbq.message;
       if (prevMsg?.photo?.length) {
         try {
@@ -869,16 +913,13 @@ async function handleUpdate(update, env) {
       }
 
       // اگه پیام قبلی text بود ولی کاور داریم، پیام قدیمی رو حذف و پیام جدید با عکس بفرست
-      if (cover) {
+      if (coverRaw) {
         try { await tgCall(BOT_TOKEN, "deleteMessage", { chat_id: chat.id, message_id: msgId }); } catch {}
-        try {
-          return await tgCall(BOT_TOKEN, "sendPhoto", {
-            chat_id: chat.id,
-            photo: cover,
-            caption: titleText,
-            reply_markup: kb,
-          });
-        } catch {}
+        // اول resize شده، بعد اصلی
+        for (const photo of [coverSmall, coverRaw].filter(Boolean)) {
+          const r = await tgCall(BOT_TOKEN, "sendPhoto", { chat_id: chat.id, photo, caption: titleText, reply_markup: kb });
+          if (r?.ok) return;
+        }
       }
 
       // fallback: ویرایش متنی
@@ -960,7 +1001,8 @@ async function handleUpdate(update, env) {
     const results = [];
 
     for (const m of allResults) {
-      const movieType = normalizeMovieType(m);
+      const movieType  = normalizeMovieType(m);
+      const thumbUrl   = resizeCoverUrl(normalizeCover(m.cover)) || m.cover;
 
       // کالکشن/سریال که در movies هست
       if ((movieType === "collection" || movieType === "series") && m.id && !m.movie_id) {
@@ -969,7 +1011,7 @@ async function handleUpdate(update, env) {
           id: `res_${Math.random()}`,
           title: `${movieTitleWithType(m, "fa")}`,
           description: shortenText(m.synopsis || `${m.genre || ""} | ${m.product || ""} | ${m.stars || ""}`),
-          thumb_url: m.cover,
+          thumb_url: thumbUrl,
           input_message_content: { message_text: `🎬 ${m.title}` },
           reply_markup: {
             inline_keyboard: [[
@@ -989,7 +1031,7 @@ async function handleUpdate(update, env) {
           id: `res_${Math.random()}`,
           title: m.title || t("fa", "NO_TITLE"),
           description: shortenText(m.synopsis || `${m.genre || ""} | ${m.product || ""} | ${m.stars || ""}`),
-          thumb_url: m.cover,
+          thumb_url: thumbUrl,
           input_message_content: { message_text: `🎬 ${m.title}` },
           reply_markup: {
             inline_keyboard: [
@@ -1009,7 +1051,7 @@ async function handleUpdate(update, env) {
         id: `res_${Math.random()}`,
         title: m.title,
         description: shortenText(m.synopsis || `${m.genre || ""} | ${m.product || ""} | ${m.stars || ""}`),
-        thumb_url: m.cover,
+        thumb_url: thumbUrl,
         input_message_content: { message_text: `🎬 ${m.title}` },
         reply_markup: { inline_keyboard: [[{ text: "▶️ Go to file", url: `https://t.me/${BOT_USERNAME}?start=${payload}` }]] },
       });
