@@ -22,6 +22,7 @@ const i18n = {
     BTN_SUPPORT:   "📞 ارتباط با پشتیبانی",
     BTN_DONATE:    "💙 حمایت از ما",
     BTN_LANGUAGE:  "🌐 زبان / Language",
+    BTN_HELP:      "🆘 راهنما",
 
     WELCOME:
       "🎬 به فیلم‌چین خوش آمدید! 🍿\n" +
@@ -80,6 +81,7 @@ const i18n = {
     EPISODES_TITLE: (title) => `📺 اپیزودهای ${title}:`,
     EPISODE_LABEL: (n, title) => `قسمت ${n}: ${title}`,
     NO_EPISODES: "❌ اپیزودی پیدا نشد",
+    ADMIN_ONLY_LANGUAGE: "⛔ فقط ادمین گروه می‌تواند زبان ربات را تغییر دهد.",
 
     HELP_TEXT: (botUsername) =>
       "🆘 *راهنمای فیلم‌چین*\n\n" +
@@ -99,12 +101,12 @@ const i18n = {
       "کافیه اسم فیلم یا سریال مورد نظرت رو، نام بازیگر یا بخشی از توضیحات فیلم رو مستقیم ارسال کنی تا داخل دیتابیس جست‌وجو کنم.\n\n" +
       "⚡️ *جست‌وجوی اینلاین (داخل هر چت)*\n" +
       `توی هر چتی (حتی توی چت با دوستات) بنویس\n\`@${botUsername} نام فیلم\`\nو چند لحظه صبر کن؛ یه لیست از نتایج بهت نشون داده می‌شه و با زدن روی هر نتیجه، اون فیلم با دکمه‌ی دریافت فایل، برای همه قابل مشاهده و دریافت خواهد بود. (حداقل ۲ حرف وارد کن)\n\n` +
-      "👥 *جست‌وجو کردن داخل گروه*\n" +
-      "اگه ربات رو به یه گروه اضافه کنی:\n" +
-      "🔸 با دستور\n`/search نام فیلم`\nیا با ارسال\n`/search`\nدر ریپلای روی پیامی (که اسم فیلم توشه) داخل گروه جست‌وجو کن.\n\n" +
-      "🔸 برای هر نتیجه یه عکس کاور + دکمه‌ی «دریافت این قسمت» و یه دستور `/send_...` زیرش فرستاده می‌شه؛\n" +
-      "با زدن روی دکمه فایل به‌صورت خصوصی برات ارسال می‌شه، یا با زدن روی همون دستور\n`/send_...`\nفایل مستقیم داخل خود گروه برای همه پست می‌شه.\n\n" +
-      "اگر نتیجه یک کالکشن یا سریال باشه، دکمه‌ی دریافت همه اپیزودها هم براش نشون داده می‌شه.",
+      "👥 *کار کردن داخل گروه*\n" +
+      "اگه ربات رو به یه گروه اضافه کنی، داخل گروه کیبورد دکمه‌ای نشون داده نمی‌شه و فقط با دستورات «/» کار می‌کنی:\n" +
+      "🔸 با دستور\n`/search نام فیلم`\nیا با ارسال\n`/search`\nدر ریپلای روی پیامی (که اسم فیلم توشه)، داخل گروه جست‌وجو کن.\n" +
+      "🔸 دستورات /Genres، /Newest، /Popular، /contact، /donate و /help هم داخل گروه دقیقاً همون پاسخ چت خصوصی رو می‌دن.\n" +
+      "🔸 تغییر زبان (/language) داخل گروه فقط در اختیار ادمین‌های گروهه.\n\n" +
+      "برای هر نتیجه‌ی جست‌وجو یه عکس کاور + دکمه‌ی «دریافت این قسمت» فرستاده می‌شه؛ با زدن روی دکمه، فایل همون لحظه داخل خود گروه برای همه ارسال می‌شه (بدون نیاز به رفتن به چت خصوصی ربات). اگر نتیجه یک کالکشن یا سریال باشه، دکمه‌ی «📥 دریافت همه اپیزودها» هم زیرش نشون داده می‌شه که اون هم مستقیم داخل گروه فایل‌ها رو می‌فرسته.",
   },
 
   en: {
@@ -116,6 +118,7 @@ const i18n = {
     BTN_SUPPORT:   "📞 contact us",
     BTN_DONATE:    "💙 Support Us",
     BTN_LANGUAGE:  "🌐 زبان / Language",
+    BTN_HELP:      "🆘 Help",
 
     WELCOME:
       "🎬 Welcome to FilmChiin! 🍿\n" +
@@ -173,6 +176,7 @@ const i18n = {
     EPISODES_TITLE: (title) => `📺 ${title} episodes:`,
     EPISODE_LABEL: (n, title) => `Episode ${n}: ${title}`,
     NO_EPISODES: "❌ No episodes found",
+    ADMIN_ONLY_LANGUAGE: "⛔ Only a group admin can change the bot's language.",
 
     HELP_TEXT: (botUsername) =>
       "🆘 *FilmChiin Help*\n\n" +
@@ -192,12 +196,12 @@ const i18n = {
       "Just send the movie/series name, an actor's name, or part of a movie's description, and I'll search the database for it.\n\n" +
       "⚡️ *Inline search (in any chat)*\n" +
       `In any chat (even with friends), type\n\`@${botUsername} movie name\`\nand wait a moment; a list of results will show up, and tapping any result sends that movie with a download button, visible and downloadable by everyone in the chat. (minimum 2 characters)\n\n` +
-      "👥 *Searching inside a group*\n" +
-      "If you add the bot to a group:\n" +
-      "🔸 Use\n`/search movie name`\nor send\n`/search`\nas a reply to a message containing the movie name, to search inside the group.\n\n" +
-      "🔸 Each result is sent with a cover photo, a “Get this episode” button, and a `/send_...` command underneath;\n" +
-      "tapping the button sends the file to you privately, or tapping that\n`/send_...`\ncommand posts the file directly into the group for everyone.\n\n" +
-      "If the result is a collection or series, a “Get all episodes” button is also shown for it.",
+      "👥 *Using the bot in a group*\n" +
+      "If you add the bot to a group, no keyboard buttons are shown there — everything works only through «/» commands:\n" +
+      "🔸 Use\n`/search movie name`\nor send\n`/search`\nas a reply to a message containing the movie name, to search inside the group.\n" +
+      "🔸 /Genres, /Newest, /Popular, /contact, /donate and /help also give the exact same answer inside the group as in private chat.\n" +
+      "🔸 Changing the language (/language) inside a group is only available to group admins.\n\n" +
+      "Each search result is sent with a cover photo and a “Get this episode” button; tapping the button sends the file right there in the group instantly (no need to open the bot's private chat). If the result is a collection or series, a “📥 Get all episodes” button is shown too, which also sends the files directly inside the group.",
   },
 };
 
@@ -244,7 +248,7 @@ function buildMainMenuMarkup(lang, session) {
       [t(lang, "BTN_GENRES"), t(lang, "BTN_NEWEST"), t(lang, "BTN_POPULAR")],
       [t(lang, "BTN_FAVORITES")],
       [t(lang, "BTN_SUPPORT"), t(lang, "BTN_DONATE")],
-      [t(lang, "BTN_LANGUAGE")],
+      [t(lang, "BTN_LANGUAGE"), t(lang, "BTN_HELP")],
     ],
     resize_keyboard: true,
   };
@@ -439,7 +443,7 @@ async function fetchMovieEpisodes(supabase, movieId) {
   return episodes;
 }
 
-function episodeKeyboard(episodes, movieId, lang, botUsername) {
+function episodeKeyboard(episodes, movieId, lang, botUsername, isGroup = false) {
   const rows = [[{ text: t(lang, "BACK"), callback_data: "back:menu" }]];
   for (const episode of episodes) {
     const payload = buildForwardPayloadFromChannelLink(episode.link);
@@ -451,7 +455,13 @@ function episodeKeyboard(episodes, movieId, lang, botUsername) {
     } else {
       label = t(lang, "EPISODE_LABEL", episode._episodeIndex, shortenText(episode.title || t(lang, "NO_TITLE"), 40));
     }
-    rows.push([{ text: label, url: `https://t.me/${botUsername}?start=${payload}` }]);
+    if (isGroup) {
+      // داخل گروه: دکمه مستقیم فایل رو همونجا می‌فرسته (بدون رفتن به PV ربات)
+      const prefix = episode._src === "movie_items" ? "mi" : "m";
+      rows.push([{ text: label, callback_data: `${prefix}:${episode.id}` }]);
+    } else {
+      rows.push([{ text: label, url: `https://t.me/${botUsername}?start=${payload}` }]);
+    }
   }
   rows.push([{ text: t(lang, "GET_ALL_EPISODES"), callback_data: `all:m:${movieId}` }]);
   return { inline_keyboard: rows };
@@ -587,13 +597,17 @@ async function getGenreList(supabase, kv, lang) {
 // Keyboard Builders (با پشتیبانی زبان)
 // ===================================================
 
-function movieListKeyboard(movies, lang, botUsername = "Filmchinbot") {
+function movieListKeyboard(movies, lang, botUsername = "Filmchinbot", isGroup = false) {
   const rows = [[{ text: t(lang, "BACK"), callback_data: "back:menu" }]];
   for (const m of movies) {
     const text = movieTitleWithType(m, lang);
     const movieType = normalizeMovieType(m);
     if (movieType === "collection" || movieType === "series") {
       rows.push([{ text, callback_data: `eps:m:${m.id}` }]);
+      continue;
+    }
+    if (isGroup) {
+      rows.push([{ text, callback_data: `m:${m.id}` }]);
       continue;
     }
     const payload = buildForwardPayloadFromChannelLink(m.link);
@@ -613,7 +627,7 @@ async function buildGenresKeyboard(supabase, kv, lang) {
   return { genres, keyboard: { inline_keyboard: rows } };
 }
 
-async function buildGenreMoviesView(supabase, kv, genreIndex, offset, lang, envBotUsername = "Filmchinbot") {
+async function buildGenreMoviesView(supabase, kv, genreIndex, offset, lang, envBotUsername = "Filmchinbot", isGroup = false) {
   const genres = await getGenreList(supabase, kv, lang);
   const genre  = genres[genreIndex];
   if (!genre) return null;
@@ -624,6 +638,10 @@ async function buildGenreMoviesView(supabase, kv, genreIndex, offset, lang, envB
     const movieType = normalizeMovieType(m);
     if (movieType === "collection" || movieType === "series") {
       rows.push([{ text, callback_data: `eps:m:${m.id}` }]);
+      continue;
+    }
+    if (isGroup) {
+      rows.push([{ text, callback_data: `m:${m.id}` }]);
       continue;
     }
     const payload = buildForwardPayloadFromChannelLink(m.link);
@@ -817,36 +835,18 @@ function resizeCoverUrl(url) {
   }
 }
 
-// ساخت caption نتیجه‌ی جستجو برای گروه: عنوان + خلاصه داستان + لینک‌های /send_
-// از caption_entities/entities برای بولد کردن لیبل‌ها استفاده می‌شه (نه Markdown)
-// تا تایتل/سینوپسیس فیلم (که می‌تونه شامل کاراکترهای خاص باشه) مشکلی ایجاد نکنه
-function buildGroupResultCaption(title, synopsis, fileToken, allToken) {
+// ساخت caption نتیجه‌ی جستجو برای گروه: عنوان + خلاصه داستان (بدون لینک دستوری؛
+// دکمه‌های زیر پیام مستقیماً فایل رو همونجا می‌فرستن)
+function buildGroupResultCaption(title, synopsis) {
   let caption = `🎬 ${title}`;
-  const entities = [];
-
   const shortSynopsis = shortenText(synopsis, 600);
   if (shortSynopsis) caption += `\n\n${shortSynopsis}`;
-
-  if (fileToken) {
-    caption += "\n\n";
-    const label = "دریافت فایل در گروه";
-    entities.push({ type: "bold", offset: caption.length, length: label.length });
-    caption += `${label}\n/send_${fileToken}`;
-  }
-
-  if (allToken) {
-    caption += "\n\n";
-    const label = "دریافت همه اپیزود ها در گروه";
-    entities.push({ type: "bold", offset: caption.length, length: label.length });
-    caption += `${label}\n/send_all_${allToken}`;
-  }
-
-  return { caption, entities };
+  return caption;
 }
 
 // ارسال یک نتیجه جستجو به صورت پیام - منطق عین inline query
-// isGroup: اگه true باشه caption شامل خلاصه داستان + /send_token (و در صورت کالکشن/سریال
-// /send_all_token) هم می‌شه (برای گروه‌ها)؛ در چت خصوصی caption ساده (فقط عنوان) باقی می‌مونه
+// isGroup: اگه true باشه caption شامل خلاصه داستان هم می‌شه و دکمه‌های فایل/همه‌اپیزودها
+// به‌جای لینک رفتن به PV ربات، با callback_data مستقیم همون‌جا تو گروه فایل رو می‌فرستن
 async function sendSearchResult(token, chatId, m, lang, botUsername, sendSecret, isGroup) {
   const coverRaw    = normalizeCover(m.cover);
   const coverSmall  = resizeCoverUrl(coverRaw);
@@ -862,74 +862,70 @@ async function sendSearchResult(token, chatId, m, lang, botUsername, sendSecret,
     if (!r2?.ok) throw new Error(r2?.description || "sendPhoto failed");
   }
 
-  // ارسال caption (با عکس در صورت وجود، وگرنه پیام متنی) همراه با entities برای بولد کردن
-  async function deliver(caption, entities, kb) {
+  async function deliver(caption, kb) {
     if (coverRaw) {
-      const photoBody = { chat_id: chatId, caption, reply_markup: kb };
-      if (entities?.length) photoBody.caption_entities = entities;
-      try { await tryPhoto(photoBody); return; } catch {}
+      try { await tryPhoto({ chat_id: chatId, caption, reply_markup: kb }); return; } catch {}
     }
-    const msgBody = { chat_id: chatId, text: caption, reply_markup: kb };
-    if (entities?.length) msgBody.entities = entities;
-    await tgCall(token, "sendMessage", msgBody);
+    await tgCall(token, "sendMessage", { chat_id: chatId, text: caption, reply_markup: kb });
   }
 
   // آیتمی که از movie_items آمده (اپیزود یک کالکشن/سریال)
   if (m.movie_id) {
     const payload = buildForwardPayloadFromChannelLink(m.link);
     if (!payload) return;
+    const fileBtn = isGroup
+      ? { text: lang === "en" ? "▶️ Get this episode" : "▶️ دریافت این قسمت", callback_data: `mi:${m.id}` }
+      : { text: lang === "en" ? "▶️ Get this episode" : "▶️ دریافت این قسمت", url: `https://t.me/${botUsername}?start=${payload}` };
     const kb = {
       inline_keyboard: [
-        [{ text: lang === "en" ? "▶️ Get this episode" : "▶️ دریافت این قسمت", url: `https://t.me/${botUsername}?start=${payload}` }],
+        [fileBtn],
         [{ text: lang === "en" ? "📺 Other episodes" : "📺 بقیه قسمت‌های این کالکشن", callback_data: `eps:m:${m.movie_id}` }],
       ],
     };
-    if (!isGroup) return deliver(`🎬 ${m.title}`, null, kb);
-    const fileToken = encodeSendToken(payload, sendSecret);
-    const { caption, entities } = buildGroupResultCaption(m.title, m.synopsis, fileToken, null);
-    return deliver(caption, entities, kb);
+    if (!isGroup) return deliver(`🎬 ${m.title}`, kb);
+    return deliver(buildGroupResultCaption(m.title, m.synopsis), kb);
   }
 
   // آیتم از movies - ممکنه تک‌فیلم، کالکشن، یا سریال باشه
   const movieType = normalizeMovieType(m);
 
   if (movieType === "collection") {
-    // کالکشن: دکمه دریافت اپیزود اول + دکمه مشاهده همه اپیزودها
+    // کالکشن: دکمه دریافت اپیزود اول + دکمه مشاهده همه اپیزودها (+ داخل گروه: دکمه دریافت همه)
     const payload = buildForwardPayloadFromChannelLink(m.link);
     const rows = [];
     if (payload) {
-      rows.push([{ text: lang === "en" ? "▶️ Get this episode" : "▶️ دریافت این قسمت", url: `https://t.me/${botUsername}?start=${payload}` }]);
+      const fileBtn = isGroup
+        ? { text: lang === "en" ? "▶️ Get this episode" : "▶️ دریافت این قسمت", callback_data: `m:${m.id}` }
+        : { text: lang === "en" ? "▶️ Get this episode" : "▶️ دریافت این قسمت", url: `https://t.me/${botUsername}?start=${payload}` };
+      rows.push([fileBtn]);
     }
     rows.push([{ text: lang === "en" ? "📺 View Episodes" : "📺 مشاهده اپیزودها", callback_data: `eps:m:${m.id}` }]);
+    if (isGroup) rows.push([{ text: t(lang, "GET_ALL_EPISODES"), callback_data: `all:m:${m.id}` }]);
     const kb = { inline_keyboard: rows };
-    if (!isGroup) return deliver(`🎬 ${m.title}`, null, kb);
-    const fileToken = payload ? encodeSendToken(payload, sendSecret) : null;
-    const allToken  = encodeSendToken(`all_${m.id}`, sendSecret);
-    const { caption, entities } = buildGroupResultCaption(m.title, m.synopsis, fileToken, allToken);
-    return deliver(caption, entities, kb);
+    if (!isGroup) return deliver(`🎬 ${m.title}`, kb);
+    return deliver(buildGroupResultCaption(m.title, m.synopsis), kb);
   }
 
   if (movieType === "series") {
-    // سریال: فقط دکمه مشاهده اپیزودها (بدون get this episode چون خواسته شد)
-    const kb = {
-      inline_keyboard: [[
-        { text: lang === "en" ? "📺 View Episodes" : "📺 مشاهده اپیزودها", callback_data: `eps:m:${m.id}` },
-      ]],
-    };
-    if (!isGroup) return deliver(`🎬 ${m.title}`, null, kb);
-    const allToken = encodeSendToken(`all_${m.id}`, sendSecret);
-    const { caption, entities } = buildGroupResultCaption(m.title, m.synopsis, null, allToken);
-    return deliver(caption, entities, kb);
+    // سریال: دکمه مشاهده اپیزودها (+ داخل گروه: دکمه دریافت همه)
+    const rows = [[
+      { text: lang === "en" ? "📺 View Episodes" : "📺 مشاهده اپیزودها", callback_data: `eps:m:${m.id}` },
+    ]];
+    if (isGroup) rows.push([{ text: t(lang, "GET_ALL_EPISODES"), callback_data: `all:m:${m.id}` }]);
+    const kb = { inline_keyboard: rows };
+    if (!isGroup) return deliver(`🎬 ${m.title}`, kb);
+    return deliver(buildGroupResultCaption(m.title, m.synopsis), kb);
   }
 
   // تک‌فیلم معمولی
   const payload = buildForwardPayloadFromChannelLink(m.link);
   if (!payload) return;
-  const kb = { inline_keyboard: [[{ text: "▶️ Go to file", url: `https://t.me/${botUsername}?start=${payload}` }]] };
-  if (!isGroup) return deliver(`🎬 ${m.title}`, null, kb);
-  const fileToken = encodeSendToken(payload, sendSecret);
-  const { caption, entities } = buildGroupResultCaption(m.title, m.synopsis, fileToken, null);
-  return deliver(caption, entities, kb);
+  const goBtn = isGroup
+    ? { text: "▶️ Go to file", callback_data: `m:${m.id}` }
+    : { text: "▶️ Go to file", url: `https://t.me/${botUsername}?start=${payload}` };
+  const kb = { inline_keyboard: [[goBtn]] };
+  if (!isGroup) return deliver(`🎬 ${m.title}`, kb);
+  return deliver(buildGroupResultCaption(m.title, m.synopsis), kb);
 }
 
 // ===================================================
@@ -963,6 +959,7 @@ async function handleUpdate(update, env) {
     const msgId  = cbq.message?.message_id;
     const chatId = String(chat?.id);
     const lang   = await getUserLang(kv, chatId);
+    const isGroupCb = ["group", "supergroup"].includes(chat?.type);
 
     await answer(cbq.id);
 
@@ -972,7 +969,7 @@ async function handleUpdate(update, env) {
       const movie = await fetchMovieById(supabase, movieId);
       if (!movie) return send(chat.id, t(lang, "MOVIE_NOT_FOUND"));
       const episodes = await fetchMovieEpisodes(supabase, movieId);
-      const kb = episodeKeyboard(episodes, movieId, lang, BOT_USERNAME);
+      const kb = episodeKeyboard(episodes, movieId, lang, BOT_USERNAME, isGroupCb);
       const titleText = t(lang, "EPISODES_TITLE", movie.title || t(lang, "NO_TITLE"));
       const coverRaw   = normalizeCover(movie.cover);
       const coverSmall = resizeCoverUrl(coverRaw);
@@ -1059,7 +1056,7 @@ async function handleUpdate(update, env) {
     if (genreMatch) {
       const genreIndex = Number(genreMatch[1]);
       const offset     = Number(genreMatch[2]);
-      const view = await buildGenreMoviesView(supabase, kv, genreIndex, offset, lang, BOT_USERNAME);
+      const view = await buildGenreMoviesView(supabase, kv, genreIndex, offset, lang, BOT_USERNAME, isGroupCb);
       if (!view) return send(chat.id, t(lang, "TRY_GENRES_AGAIN"));
       return edit(chat.id, msgId, view.text, { reply_markup: view.keyboard });
     }
@@ -1084,6 +1081,11 @@ async function handleUpdate(update, env) {
 
       // کالکشن/سریال که در movies هست
       if ((movieType === "collection" || movieType === "series") && m.id && !m.movie_id) {
+        const payload = buildForwardPayloadFromChannelLink(m.link);
+        const rows = [];
+        if (payload) rows.push([{ text: "▶️ Go to file", url: `https://t.me/${BOT_USERNAME}?start=${payload}` }]);
+        rows.push([{ text: "📺 مشاهده اپیزودها", url: `https://t.me/${BOT_USERNAME}?start=eps_${m.id}` }]);
+        rows.push([{ text: t("fa", "GET_ALL_EPISODES"), url: `https://t.me/${BOT_USERNAME}?start=all_${m.id}` }]);
         results.push({
           type: "article",
           id: `res_${Math.random()}`,
@@ -1091,11 +1093,7 @@ async function handleUpdate(update, env) {
           description: shortenText(m.synopsis || `${m.genre || ""} | ${m.product || ""} | ${m.stars || ""}`),
           thumb_url: thumbUrl,
           input_message_content: { message_text: `🎬 ${m.title}` },
-          reply_markup: {
-            inline_keyboard: [[
-              { text: "📺 مشاهده اپیزودها", callback_data: `eps:m:${m.id}` },
-            ]],
-          },
+          reply_markup: { inline_keyboard: rows },
         });
         continue;
       }
@@ -1114,7 +1112,8 @@ async function handleUpdate(update, env) {
           reply_markup: {
             inline_keyboard: [
               [{ text: "▶️ دریافت این قسمت", url: `https://t.me/${BOT_USERNAME}?start=${payload}` }],
-              [{ text: "📺 بقیه قسمت‌های این کالکشن", callback_data: `eps:m:${m.movie_id}` }],
+              [{ text: "📺 بقیه قسمت‌های این کالکشن", url: `https://t.me/${BOT_USERNAME}?start=eps_${m.movie_id}` }],
+              [{ text: t("fa", "GET_ALL_EPISODES"), url: `https://t.me/${BOT_USERNAME}?start=all_${m.movie_id}` }],
             ],
           },
         });
@@ -1148,6 +1147,7 @@ async function handleUpdate(update, env) {
   const chatId = String(chat.id);
   let text     = msg.text?.trim() || "";
   const lang   = await getUserLang(kv, chatId);
+  const isPrivate = chat.type === "private";
 
   // ===================================================
   // /start
@@ -1180,13 +1180,35 @@ async function handleUpdate(update, env) {
       return;
     }
 
-    return send(chat.id, t(lang, "WELCOME"), { reply_markup: buildMainMenuMarkup(lang, await getSession(kv, chatId)) });
+    // نمایش لیست اپیزودهای یک کالکشن/سریال - از نتیجه‌ی اینلاین (لینک دیپ‌لینک «مشاهده اپیزودها»)
+    // لینک به شکل: https://t.me/<bot>?start=eps_<movieId> است
+    if (payload.startsWith("eps_")) {
+      const movieId = payload.slice(4);
+      const movie = await fetchMovieById(supabase, movieId);
+      if (!movie) return send(chat.id, t(lang, "MOVIE_NOT_FOUND"));
+      const episodes = await fetchMovieEpisodes(supabase, movieId);
+      const kb = episodeKeyboard(episodes, movieId, lang, BOT_USERNAME, false);
+      const titleText  = t(lang, "EPISODES_TITLE", movie.title || t(lang, "NO_TITLE"));
+      const coverRaw   = normalizeCover(movie.cover);
+      if (coverRaw) {
+        const coverSmall = resizeCoverUrl(coverRaw);
+        for (const photo of [coverSmall, coverRaw].filter(Boolean)) {
+          const r = await tgCall(BOT_TOKEN, "sendPhoto", { chat_id: chat.id, photo, caption: titleText, reply_markup: kb });
+          if (r?.ok) return;
+        }
+      }
+      return send(chat.id, titleText, { reply_markup: kb });
+    }
+
+    // داخل گروه دکمه‌ی کیبورد دائمی نشون داده نمی‌شه؛ فقط دستورات «/» کار می‌کنن
+    return send(chat.id, t(lang, "WELCOME"), {
+      reply_markup: isPrivate ? buildMainMenuMarkup(lang, await getSession(kv, chatId)) : { remove_keyboard: true },
+    });
   }
 
   // ===================================================
-  // Private chat handlers
+  // Private / Group chat handlers
   // ===================================================
-  const isPrivate = chat.type === "private";
   let isSharedMenuCommand = false;
 
   if (text.startsWith("/")) {
@@ -1241,8 +1263,20 @@ async function handleUpdate(update, env) {
 
   if (isPrivate || isSharedMenuCommand) {
 
-    // --- دکمه زبان ---
+    // --- دکمه زبان (داخل گروه فقط ادمین می‌تونه تغییرش بده) ---
     if (text === i18n.fa.BTN_LANGUAGE || text === i18n.en.BTN_LANGUAGE) {
+      if (!isPrivate) {
+        try {
+          const member = await tgCall(BOT_TOKEN, "getChatMember", { chat_id: chat.id, user_id: msg.from.id });
+          const status = member?.result?.status;
+          if (!["administrator", "creator"].includes(status)) {
+            return send(chat.id, t(lang, "ADMIN_ONLY_LANGUAGE"));
+          }
+        } catch (e) {
+          console.error("ADMIN CHECK ERROR:", e.message);
+          return send(chat.id, t(lang, "ADMIN_ONLY_LANGUAGE"));
+        }
+      }
       const newLang = lang === "fa" ? "en" : "fa";
       await setUserLang(kv, chatId, newLang);
       const newSession = isPrivate ? await getSession(kv, chatId) : null;
@@ -1253,6 +1287,14 @@ async function handleUpdate(update, env) {
 
     const session  = isPrivate ? await getSession(kv, chatId) : null;
     const mainMenu = isPrivate ? buildMainMenuMarkup(lang, session) : undefined;
+
+    // --- دکمه راهنما (فقط چت خصوصی؛ همون پاسخ /help) ---
+    if (isPrivate && text === t(lang, "BTN_HELP")) {
+      return send(chat.id, t(lang, "HELP_TEXT", BOT_USERNAME), {
+        parse_mode: "Markdown",
+        reply_markup: mainMenu,
+      });
+    }
 
     // --- حساب کاربری (فقط چت خصوصی) ---
     if (
@@ -1271,14 +1313,14 @@ async function handleUpdate(update, env) {
     if (text === t(lang, "BTN_NEWEST")) {
       const movies = await fetchNewestMovies(supabase);
       if (!movies.length) return send(chat.id, t(lang, "NOT_FOUND"), { reply_markup: mainMenu });
-      return send(chat.id, t(lang, "NEWEST_TITLE"), { reply_markup: movieListKeyboard(movies, lang, BOT_USERNAME) });
+      return send(chat.id, t(lang, "NEWEST_TITLE"), { reply_markup: movieListKeyboard(movies, lang, BOT_USERNAME, !isPrivate) });
     }
 
     // --- پردانلودترین‌ها ---
     if (text === t(lang, "BTN_POPULAR")) {
       const movies = await fetchPopularMoviesList(supabase);
       if (!movies.length) return send(chat.id, t(lang, "NOT_FOUND"), { reply_markup: mainMenu });
-      return send(chat.id, t(lang, "POPULAR_TITLE"), { reply_markup: movieListKeyboard(movies, lang, BOT_USERNAME) });
+      return send(chat.id, t(lang, "POPULAR_TITLE"), { reply_markup: movieListKeyboard(movies, lang, BOT_USERNAME, !isPrivate) });
     }
 
     // --- ژانر‌ها ---
