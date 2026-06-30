@@ -24,8 +24,8 @@ const i18n = {
     BTN_LANGUAGE:  "🌐 زبان / Language",
 
     WELCOME:
-      "به فیلم‌چین خوش آمدید...\n" +
-      "برای جست‌وجو نام فیلم را ارسال کنید یا از دکمه‌های زیر استفاده کنید",
+      "🎬 به فیلم‌چین خوش آمدید! 🍿\n" +
+      "🔍 برای جست‌وجو، نام فیلم را ارسال کنید یا از دکمه‌های زیر استفاده کنید 👇",
 
     NEWEST_TITLE:   "🆕 جدیدترین‌ها:",
     POPULAR_TITLE:  "🔥 پردانلودترین‌ها:",
@@ -80,6 +80,22 @@ const i18n = {
     EPISODES_TITLE: (title) => `📺 اپیزودهای ${title}:`,
     EPISODE_LABEL: (n, title) => `قسمت ${n}: ${title}`,
     NO_EPISODES: "❌ اپیزودی پیدا نشد",
+
+    HELP_TEXT:
+      "🆘 *راهنمای فیلم‌چین*\n\n" +
+      "می‌تونی از دکمه‌های کیبورد پایین صفحه استفاده کنی یا همون کار رو با دستورات زیر انجام بدی 👇\n\n" +
+      "👤 /Account — مشاهده یا ورود به حساب کاربری\n" +
+      "🚪 /logout — خروج از حساب کاربری\n" +
+      "🎭 /Genres — مرور فیلم‌ها بر اساس ژانر\n" +
+      "🆕 /Newest — جدیدترین فیلم‌ها و سریال‌ها\n" +
+      "🔥 /Popular — پردانلودترین‌ها\n" +
+      "❤️ /Favorites — فیلم‌های مورد علاقه‌ات (نیاز به ورود به حساب)\n" +
+      "📞 /contact — ارتباط با پشتیبانی\n" +
+      "💙 /donate — حمایت از فیلم‌چین\n" +
+      "🌐 /language — تغییر زبان ربات (فارسی/English)\n" +
+      "🔄 /start — شروع دوباره ربات\n" +
+      "🆘 /help — نمایش همین راهنما\n\n" +
+      "🔎 همچنین کافیه اسم فیلم یا سریال مورد نظرت رو مستقیم تایپ و ارسال کنی تا براش جست‌وجو کنم!",
   },
 
   en: {
@@ -93,8 +109,8 @@ const i18n = {
     BTN_LANGUAGE:  "🌐 زبان / Language",
 
     WELCOME:
-      "Welcome to FilmChiin...\n" +
-      "Send a movie name to search or use the buttons below",
+      "🎬 Welcome to FilmChiin! 🍿\n" +
+      "🔍 Send a movie name to search, or use the buttons below 👇",
 
     NEWEST_TITLE:   "🆕 Newest:",
     POPULAR_TITLE:  "🔥 Most Popular:",
@@ -148,6 +164,22 @@ const i18n = {
     EPISODES_TITLE: (title) => `📺 ${title} episodes:`,
     EPISODE_LABEL: (n, title) => `Episode ${n}: ${title}`,
     NO_EPISODES: "❌ No episodes found",
+
+    HELP_TEXT:
+      "🆘 *FilmChiin Help*\n\n" +
+      "You can use the keyboard buttons below, or do the exact same thing with these commands 👇\n\n" +
+      "👤 /Account — view or log in to your account\n" +
+      "🚪 /logout — log out of your account\n" +
+      "🎭 /Genres — browse movies by genre\n" +
+      "🆕 /Newest — newest movies and series\n" +
+      "🔥 /Popular — most downloaded\n" +
+      "❤️ /Favorites — your favorite movies (login required)\n" +
+      "📞 /contact — contact support\n" +
+      "💙 /donate — support FilmChiin\n" +
+      "🌐 /language — switch bot language (فارسی/English)\n" +
+      "🔄 /start — restart the bot\n" +
+      "🆘 /help — show this help message\n\n" +
+      "🔎 You can also just type a movie or series name directly to search for it!",
   },
 };
 
@@ -1070,7 +1102,7 @@ async function handleUpdate(update, env) {
   const msg    = update.message;
   const chat   = msg.chat;
   const chatId = String(chat.id);
-  const text   = msg.text?.trim() || "";
+  let text     = msg.text?.trim() || "";
   const lang   = await getUserLang(kv, chatId);
 
   // ===================================================
@@ -1113,15 +1145,44 @@ async function handleUpdate(update, env) {
   if (chat.type === "private") {
 
     if (text.startsWith("/")) {
+      const cmdMatch = text.match(/^\/([a-zA-Z_]+)(@\w+)?/);
+      const cmdName  = cmdMatch ? cmdMatch[1].toLowerCase() : "";
+
       // /logout
-      if (text === "/logout") {
+      if (cmdName === "logout") {
         const session = await getSession(kv, chatId);
         if (session) {
           await kv?.delete(`session:${chatId}`);
         }
         return send(chat.id, t(lang, "LOGOUT_OK"), { reply_markup: buildMainMenuMarkup(lang, null) });
       }
-      return;
+
+      // /help
+      if (cmdName === "help") {
+        return send(chat.id, t(lang, "HELP_TEXT"), {
+          parse_mode: "Markdown",
+          reply_markup: buildMainMenuMarkup(lang, await getSession(kv, chatId)),
+        });
+      }
+
+      // نگاشت بقیه‌ی دستورات منو به همان رفتار دکمه‌ی متناظرشان در کیبورد
+      const COMMAND_TO_BUTTON = {
+        account:   "BTN_ACCOUNT",
+        genres:    "BTN_GENRES",
+        newest:    "BTN_NEWEST",
+        popular:   "BTN_POPULAR",
+        favorites: "BTN_FAVORITES",
+        contact:   "BTN_SUPPORT",
+        donate:    "BTN_DONATE",
+        language:  "BTN_LANGUAGE",
+      };
+
+      if (COMMAND_TO_BUTTON[cmdName]) {
+        // متن پیام را با متن همان دکمه جایگزین می‌کنیم تا دقیقاً مسیر همان دکمه اجرا شود
+        text = t(lang, COMMAND_TO_BUTTON[cmdName]);
+      } else {
+        return;
+      }
     }
 
     // --- دکمه زبان ---
