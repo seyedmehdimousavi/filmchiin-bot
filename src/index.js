@@ -95,15 +95,16 @@ const i18n = {
       "🌐 /language — تغییر زبان ربات (فارسی/English)\n" +
       "🔄 /start — شروع دوباره ربات\n" +
       "🆘 /help — نمایش همین راهنما\n\n" +
-      "🔎 *جست‌وجوی مستقیم (در چت خصوصی)*\n" +
-      "کافیه اسم فیلم یا سریال مورد نظرت رو مستقیم تایپ و ارسال کنی تا براش جست‌وجو کنم.\n\n" +
-      `⚡️ *جست‌وجوی اینلاین (داخل هر چت)*\n` +
-      `توی هر چتی (حتی توی چت با دوستات) بنویس \`@${botUsername} نام فیلم\` و چند لحظه صبر کن؛ یه لیست از نتایج بهت نشون داده می‌شه و با زدن روی هرکدوم، همون نتیجه با دکمه‌ی دریافت فایل برای همه قابل مشاهده ارسال می‌شه. (حداقل ۲ حرف وارد کن)\n\n` +
-      "👥 *کار کردن داخل گروه*\n" +
+      "🔎 *جست‌وجوی مستقیم*\n" +
+      "کافیه اسم فیلم یا سریال مورد نظرت رو، نام بازیگر یا بخشی از توضیحات فیلم رو مستقیم ارسال کنی تا داخل دیتابیس جست‌وجو کنم.\n\n" +
+      "⚡️ *جست‌وجوی اینلاین (داخل هر چت)*\n" +
+      `توی هر چتی (حتی توی چت با دوستات) بنویس\n\`@${botUsername} نام فیلم\`\nو چند لحظه صبر کن؛ یه لیست از نتایج بهت نشون داده می‌شه و با زدن روی هر نتیجه، اون فیلم با دکمه‌ی دریافت فایل، برای همه قابل مشاهده و دریافت خواهد بود. (حداقل ۲ حرف وارد کن)\n\n` +
+      "👥 *جست‌وجو کردن داخل گروه*\n" +
       "اگه ربات رو به یه گروه اضافه کنی:\n" +
-      "🔸 با دستور `/search نام فیلم` (یا `/search` در ریپلای روی پیامی که اسم فیلم توشه) داخل گروه جست‌وجو کن.\n" +
-      "🔸 برای هر نتیجه یه عکس کاور + دکمه‌ی «دریافت این قسمت» و یه دستور `/send_...` زیرش فرستاده می‌شه؛ با زدن روی دکمه فایل به‌صورت خصوصی برات ارسال می‌شه، یا با زدن/فرستادن همون دستور `/send_...` فایل مستقیم داخل خود گروه برای همه پست می‌شه.\n" +
-      "🔸 دکمه‌های کیبورد (👤🎭🆕...) و دستورات تک‌کاربره مثل /Account و /Favorites داخل گروه کار نمی‌کنن و فقط مخصوص چت خصوصی هستن.",
+      "🔸 با دستور\n`/search نام فیلم`\nیا با ارسال\n`/search`\nدر ریپلای روی پیامی (که اسم فیلم توشه) داخل گروه جست‌وجو کن.\n\n" +
+      "🔸 برای هر نتیجه یه عکس کاور + دکمه‌ی «دریافت این قسمت» و یه دستور `/send_...` زیرش فرستاده می‌شه؛\n" +
+      "با زدن روی دکمه فایل به‌صورت خصوصی برات ارسال می‌شه، یا با زدن روی همون دستور\n`/send_...`\nفایل مستقیم داخل خود گروه برای همه پست می‌شه.\n\n" +
+      "اگر نتیجه یک کالکشن یا سریال باشه، دکمه‌ی دریافت همه اپیزودها هم براش نشون داده می‌شه.",
   },
 
   en: {
@@ -187,15 +188,16 @@ const i18n = {
       "🌐 /language — switch bot language (فارسی/English)\n" +
       "🔄 /start — restart the bot\n" +
       "🆘 /help — show this help message\n\n" +
-      "🔎 *Direct search (in private chat)*\n" +
-      "Just type and send a movie or series name to search for it.\n\n" +
-      `⚡️ *Inline search (in any chat)*\n` +
-      `In any chat (even with friends), type \`@${botUsername} movie name\` and wait a moment; a list of results will pop up, and tapping one sends that result with a download button, visible to everyone in the chat. (minimum 2 characters)\n\n` +
-      "👥 *Using the bot in a group*\n" +
+      "🔎 *Direct search*\n" +
+      "Just send the movie/series name, an actor's name, or part of a movie's description, and I'll search the database for it.\n\n" +
+      "⚡️ *Inline search (in any chat)*\n" +
+      `In any chat (even with friends), type\n\`@${botUsername} movie name\`\nand wait a moment; a list of results will show up, and tapping any result sends that movie with a download button, visible and downloadable by everyone in the chat. (minimum 2 characters)\n\n` +
+      "👥 *Searching inside a group*\n" +
       "If you add the bot to a group:\n" +
-      "🔸 Use `/search movie name` (or just `/search` as a reply to a message containing the name) to search inside the group.\n" +
-      "🔸 Each result is sent with a cover photo, a “Get this episode” button, and a `/send_...` command underneath; tapping the button sends you the file privately, while tapping/sending that `/send_...` command posts the file directly into the group for everyone.\n" +
-      "🔸 Personal keyboard buttons (👤🎭🆕...) and single-user commands like /Account and /Favorites don't work in groups — they're only for private chat.",
+      "🔸 Use\n`/search movie name`\nor send\n`/search`\nas a reply to a message containing the movie name, to search inside the group.\n\n" +
+      "🔸 Each result is sent with a cover photo, a “Get this episode” button, and a `/send_...` command underneath;\n" +
+      "tapping the button sends the file to you privately, or tapping that\n`/send_...`\ncommand posts the file directly into the group for everyone.\n\n" +
+      "If the result is a collection or series, a “Get all episodes” button is also shown for it.",
   },
 };
 
