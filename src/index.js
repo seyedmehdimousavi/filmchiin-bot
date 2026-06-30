@@ -54,6 +54,7 @@ const i18n = {
       "کمک‌های کوچک تغییرات بزرگ ایجاد می‌کنند\n\n" +
       "*GRAM (ex TON):*",
     DONATE_ADDR: "UQAqP9Q7Hv27xSFmxonhp9wbV6_vBzOwmMPahEqaz9omq1FT",
+    DONATE_OPEN_TONKEEPER_BTN: "🔓 باز کردن در تون‌کیپر",
 
     LANG_CHANGED: "✅ زبان به فارسی تغییر کرد",
 
@@ -121,6 +122,7 @@ const i18n = {
       "Small contributions make big changes\n\n" +
       "*GRAM (ex TON):*",
     DONATE_ADDR: "UQAqP9Q7Hv27xSFmxonhp9wbV6_vBzOwmMPahEqaz9omq1FT",
+    DONATE_OPEN_TONKEEPER_BTN: "🔓 Open in Tonkeeper",
 
     LANG_CHANGED: "✅ Language changed to English",
 
@@ -1184,8 +1186,17 @@ async function handleUpdate(update, env) {
     if (text === t(lang, "BTN_DONATE")) {
       const donateMsg  = t(lang, "DONATE_MSG");
       const donateAddr = t(lang, "DONATE_ADDR");
-      await send(chat.id, donateMsg, { parse_mode: "Markdown" });
-      return send(chat.id, `\`${donateAddr}\``, { parse_mode: "Markdown" });
+      return send(chat.id, `${donateMsg}\n\`${donateAddr}\``, {
+        parse_mode: "Markdown",
+        reply_markup: {
+          inline_keyboard: [[
+            {
+              text: t(lang, "DONATE_OPEN_TONKEEPER_BTN"),
+              url: `https://app.tonkeeper.com/transfer/${donateAddr}`,
+            },
+          ]],
+        },
+      });
     }
 
     // --- علاقه‌مندی‌ها ---
