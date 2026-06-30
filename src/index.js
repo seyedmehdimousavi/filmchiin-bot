@@ -817,8 +817,36 @@ function resizeCoverUrl(url) {
   }
 }
 
+// ساخت caption نتیجه‌ی جستجو برای گروه: عنوان + خلاصه داستان + لینک‌های /send_
+// از caption_entities/entities برای بولد کردن لیبل‌ها استفاده می‌شه (نه Markdown)
+// تا تایتل/سینوپسیس فیلم (که می‌تونه شامل کاراکترهای خاص باشه) مشکلی ایجاد نکنه
+function buildGroupResultCaption(title, synopsis, fileToken, allToken) {
+  let caption = `🎬 ${title}`;
+  const entities = [];
+
+  const shortSynopsis = shortenText(synopsis, 600);
+  if (shortSynopsis) caption += `\n\n${shortSynopsis}`;
+
+  if (fileToken) {
+    caption += "\n\n";
+    const label = "دریافت فایل در گروه";
+    entities.push({ type: "bold", offset: caption.length, length: label.length });
+    caption += `${label}\n/send_${fileToken}`;
+  }
+
+  if (allToken) {
+    caption += "\n\n";
+    const label = "دریافت همه اپیزود ها در گروه";
+    entities.push({ type: "bold", offset: caption.length, length: label.length });
+    caption += `${label}\n/send_all_${allToken}`;
+  }
+
+  return { caption, entities };
+}
+
 // ارسال یک نتیجه جستجو به صورت پیام - منطق عین inline query
-// isGroup: اگه true باشه /send_token هم اضافه می‌شه (برای گروه‌ها)
+// isGroup: اگه true باشه caption شامل خلاصه داستان + /send_token (و در صورت کالکشن/سریال
+// /send_all_token) هم می‌شه (برای گروه‌ها)؛ در چت خصوصی caption ساده (فقط عنوان) باقی می‌مونه
 async function sendSearchResult(token, chatId, m, lang, botUsername, sendSecret, isGroup) {
   const coverRaw    = normalizeCover(m.cover);
   const coverSmall  = resizeCoverUrl(coverRaw);
@@ -826,14 +854,24 @@ async function sendSearchResult(token, chatId, m, lang, botUsername, sendSecret,
   // helper: sendPhoto که اگه Telegram خطا برگردوند throw کنه
   // اول با کاور کوچک‌شده تلاش می‌کنه، اگه fail شد با URL اصلی
   async function tryPhoto(body) {
-    // تلاش اول: کاور resize شده
     if (coverSmall && coverSmall !== coverRaw) {
       const r1 = await tgCall(token, "sendPhoto", { ...body, photo: coverSmall });
       if (r1?.ok) return;
     }
-    // تلاش دوم: URL اصلی
     const r2 = await tgCall(token, "sendPhoto", { ...body, photo: coverRaw });
     if (!r2?.ok) throw new Error(r2?.description || "sendPhoto failed");
+  }
+
+  // ارسال caption (با عکس در صورت وجود، وگرنه پیام متنی) همراه با entities برای بولد کردن
+  async function deliver(caption, entities, kb) {
+    if (coverRaw) {
+      const photoBody = { chat_id: chatId, caption, reply_markup: kb };
+      if (entities?.length) photoBody.caption_entities = entities;
+      try { await tryPhoto(photoBody); return; } catch {}
+    }
+    const msgBody = { chat_id: chatId, text: caption, reply_markup: kb };
+    if (entities?.length) msgBody.entities = entities;
+    await tgCall(token, "sendMessage", msgBody);
   }
 
   // آیتمی که از movie_items آمده (اپیزود یک کالکشن/سریال)
@@ -846,13 +884,10 @@ async function sendSearchResult(token, chatId, m, lang, botUsername, sendSecret,
         [{ text: lang === "en" ? "📺 Other episodes" : "📺 بقیه قسمت‌های این کالکشن", callback_data: `eps:m:${m.movie_id}` }],
       ],
     };
-    let caption = `🎬 ${m.title}`;
-    if (isGroup) caption += `\n\n/send_${encodeSendToken(payload, sendSecret)}`;
-    if (coverRaw) {
-      try { await tryPhoto({ chat_id: chatId, caption, reply_markup: kb }); return; } catch {}
-    }
-    await tgCall(token, "sendMessage", { chat_id: chatId, text: caption, reply_markup: kb });
-    return;
+    if (!isGroup) return deliver(`🎬 ${m.title}`, null, kb);
+    const fileToken = encodeSendToken(payload, sendSecret);
+    const { caption, entities } = buildGroupResultCaption(m.title, m.synopsis, fileToken, null);
+    return deliver(caption, entities, kb);
   }
 
   // آیتم از movies - ممکنه تک‌فیلم، کالکشن، یا سریال باشه
@@ -864,19 +899,14 @@ async function sendSearchResult(token, chatId, m, lang, botUsername, sendSecret,
     const rows = [];
     if (payload) {
       rows.push([{ text: lang === "en" ? "▶️ Get this episode" : "▶️ دریافت این قسمت", url: `https://t.me/${botUsername}?start=${payload}` }]);
-      if (isGroup) {
-        // برای گروه /send token هم اضافه میشه - در caption
-      }
     }
     rows.push([{ text: lang === "en" ? "📺 View Episodes" : "📺 مشاهده اپیزودها", callback_data: `eps:m:${m.id}` }]);
     const kb = { inline_keyboard: rows };
-    let caption = `🎬 ${m.title}`;
-    if (isGroup && payload) caption += `\n\n/send_${encodeSendToken(payload, sendSecret)}`;
-    if (coverRaw) {
-      try { await tryPhoto({ chat_id: chatId, caption, reply_markup: kb }); return; } catch {}
-    }
-    await tgCall(token, "sendMessage", { chat_id: chatId, text: caption, reply_markup: kb });
-    return;
+    if (!isGroup) return deliver(`🎬 ${m.title}`, null, kb);
+    const fileToken = payload ? encodeSendToken(payload, sendSecret) : null;
+    const allToken  = encodeSendToken(`all_${m.id}`, sendSecret);
+    const { caption, entities } = buildGroupResultCaption(m.title, m.synopsis, fileToken, allToken);
+    return deliver(caption, entities, kb);
   }
 
   if (movieType === "series") {
@@ -886,24 +916,20 @@ async function sendSearchResult(token, chatId, m, lang, botUsername, sendSecret,
         { text: lang === "en" ? "📺 View Episodes" : "📺 مشاهده اپیزودها", callback_data: `eps:m:${m.id}` },
       ]],
     };
-    const caption = `🎬 ${m.title}`;
-    if (coverRaw) {
-      try { await tryPhoto({ chat_id: chatId, caption, reply_markup: kb }); return; } catch {}
-    }
-    await tgCall(token, "sendMessage", { chat_id: chatId, text: caption, reply_markup: kb });
-    return;
+    if (!isGroup) return deliver(`🎬 ${m.title}`, null, kb);
+    const allToken = encodeSendToken(`all_${m.id}`, sendSecret);
+    const { caption, entities } = buildGroupResultCaption(m.title, m.synopsis, null, allToken);
+    return deliver(caption, entities, kb);
   }
 
   // تک‌فیلم معمولی
   const payload = buildForwardPayloadFromChannelLink(m.link);
   if (!payload) return;
   const kb = { inline_keyboard: [[{ text: "▶️ Go to file", url: `https://t.me/${botUsername}?start=${payload}` }]] };
-  let caption = `🎬 ${m.title}`;
-  if (isGroup) caption += `\n\n/send_${encodeSendToken(payload, sendSecret)}`;
-  if (coverRaw) {
-    try { await tryPhoto({ chat_id: chatId, caption, reply_markup: kb }); return; } catch {}
-  }
-  await tgCall(token, "sendMessage", { chat_id: chatId, text: caption, reply_markup: kb });
+  if (!isGroup) return deliver(`🎬 ${m.title}`, null, kb);
+  const fileToken = encodeSendToken(payload, sendSecret);
+  const { caption, entities } = buildGroupResultCaption(m.title, m.synopsis, fileToken, null);
+  return deliver(caption, entities, kb);
 }
 
 // ===================================================
@@ -1160,66 +1186,79 @@ async function handleUpdate(update, env) {
   // ===================================================
   // Private chat handlers
   // ===================================================
-  if (chat.type === "private") {
+  const isPrivate = chat.type === "private";
+  let isSharedMenuCommand = false;
 
-    if (text.startsWith("/")) {
-      const cmdMatch = text.match(/^\/([a-zA-Z_]+)(@\w+)?/);
-      const cmdName  = cmdMatch ? cmdMatch[1].toLowerCase() : "";
+  if (text.startsWith("/")) {
+    const cmdMatch = text.match(/^\/([a-zA-Z_]+)(@\w+)?/);
+    const cmdName  = cmdMatch ? cmdMatch[1].toLowerCase() : "";
 
-      // /logout
-      if (cmdName === "logout") {
-        const session = await getSession(kv, chatId);
-        if (session) {
-          await kv?.delete(`session:${chatId}`);
-        }
-        return send(chat.id, t(lang, "LOGOUT_OK"), { reply_markup: buildMainMenuMarkup(lang, null) });
+    // /logout (فقط در چت خصوصی معنی داره)
+    if (isPrivate && cmdName === "logout") {
+      const session = await getSession(kv, chatId);
+      if (session) {
+        await kv?.delete(`session:${chatId}`);
       }
-
-      // /help
-      if (cmdName === "help") {
-        return send(chat.id, t(lang, "HELP_TEXT", BOT_USERNAME), {
-          parse_mode: "Markdown",
-          reply_markup: buildMainMenuMarkup(lang, await getSession(kv, chatId)),
-        });
-      }
-
-      // نگاشت بقیه‌ی دستورات منو به همان رفتار دکمه‌ی متناظرشان در کیبورد
-      const COMMAND_TO_BUTTON = {
-        account:   "BTN_ACCOUNT",
-        genres:    "BTN_GENRES",
-        newest:    "BTN_NEWEST",
-        popular:   "BTN_POPULAR",
-        favorites: "BTN_FAVORITES",
-        contact:   "BTN_SUPPORT",
-        donate:    "BTN_DONATE",
-        language:  "BTN_LANGUAGE",
-      };
-
-      if (COMMAND_TO_BUTTON[cmdName]) {
-        // متن پیام را با متن همان دکمه جایگزین می‌کنیم تا دقیقاً مسیر همان دکمه اجرا شود
-        text = t(lang, COMMAND_TO_BUTTON[cmdName]);
-      } else {
-        return;
-      }
+      return send(chat.id, t(lang, "LOGOUT_OK"), { reply_markup: buildMainMenuMarkup(lang, null) });
     }
+
+    // /help — هم در خصوصی و هم در گروه با همون پاسخ
+    if (cmdName === "help") {
+      return send(chat.id, t(lang, "HELP_TEXT", BOT_USERNAME), {
+        parse_mode: "Markdown",
+        reply_markup: isPrivate ? buildMainMenuMarkup(lang, await getSession(kv, chatId)) : undefined,
+      });
+    }
+
+    // دستوراتی که هم در چت خصوصی و هم در گروه با همون پاسخ کار می‌کنن
+    const COMMAND_TO_BUTTON_SHARED = {
+      genres:   "BTN_GENRES",
+      newest:   "BTN_NEWEST",
+      popular:  "BTN_POPULAR",
+      contact:  "BTN_SUPPORT",
+      donate:   "BTN_DONATE",
+      language: "BTN_LANGUAGE",
+    };
+    // دستوراتی که فقط در چت خصوصی معنی دارن (نیاز به ورود به حساب کاربری)
+    const COMMAND_TO_BUTTON_PRIVATE_ONLY = {
+      account:   "BTN_ACCOUNT",
+      favorites: "BTN_FAVORITES",
+    };
+
+    if (COMMAND_TO_BUTTON_SHARED[cmdName]) {
+      // متن پیام را با متن همان دکمه جایگزین می‌کنیم تا دقیقاً مسیر همان دکمه اجرا شود
+      text = t(lang, COMMAND_TO_BUTTON_SHARED[cmdName]);
+      isSharedMenuCommand = true;
+    } else if (isPrivate && COMMAND_TO_BUTTON_PRIVATE_ONLY[cmdName]) {
+      text = t(lang, COMMAND_TO_BUTTON_PRIVATE_ONLY[cmdName]);
+    } else if (!isPrivate) {
+      // دستور ناشناخته داخل گروه (مثلاً /search یا /send_...) — بدون return
+      // تا اجرا به بخش «Group handlers» در پایین فایل برسه
+    } else {
+      return;
+    }
+  }
+
+  if (isPrivate || isSharedMenuCommand) {
 
     // --- دکمه زبان ---
     if (text === i18n.fa.BTN_LANGUAGE || text === i18n.en.BTN_LANGUAGE) {
       const newLang = lang === "fa" ? "en" : "fa";
       await setUserLang(kv, chatId, newLang);
-      const newSession = await getSession(kv, chatId);
+      const newSession = isPrivate ? await getSession(kv, chatId) : null;
       return send(chat.id, t(newLang, "LANG_CHANGED"), {
-        reply_markup: buildMainMenuMarkup(newLang, newSession),
+        reply_markup: isPrivate ? buildMainMenuMarkup(newLang, newSession) : undefined,
       });
     }
 
-    const session = await getSession(kv, chatId);
-    const mainMenu = buildMainMenuMarkup(lang, session);
+    const session  = isPrivate ? await getSession(kv, chatId) : null;
+    const mainMenu = isPrivate ? buildMainMenuMarkup(lang, session) : undefined;
 
-    // --- حساب کاربری ---
+    // --- حساب کاربری (فقط چت خصوصی) ---
     if (
-      text === t(lang, "BTN_ACCOUNT") ||
-      (session && text === t(lang, "BTN_ACCOUNT_LOGGED", session.username))
+      isPrivate &&
+      (text === t(lang, "BTN_ACCOUNT") ||
+      (session && text === t(lang, "BTN_ACCOUNT_LOGGED", session.username)))
     ) {
       if (session) {
         return send(chat.id, t(lang, "ACCOUNT_INFO", session.username), { parse_mode: "Markdown" });
@@ -1278,8 +1317,8 @@ async function handleUpdate(update, env) {
       });
     }
 
-    // --- علاقه‌مندی‌ها ---
-    if (text === t(lang, "BTN_FAVORITES")) {
+    // --- علاقه‌مندی‌ها (فقط چت خصوصی) ---
+    if (isPrivate && text === t(lang, "BTN_FAVORITES")) {
       if (!session) {
         return send(chat.id, t(lang, "LOGIN_REQUIRED"), { reply_markup: mainMenu });
       }
@@ -1297,63 +1336,65 @@ async function handleUpdate(update, env) {
       return send(chat.id, t(lang, "FAVS_TITLE", ordered.length), { reply_markup: movieListKeyboard(ordered, lang, BOT_USERNAME) });
     }
 
-    // --- مدیریت مرحله‌ای ورود ---
-    const loginStep = await getLoginState(kv, chatId);
-    if (loginStep) {
-      if (loginStep.step === "username") {
-        await setLoginState(kv, chatId, { step: "password", username: text });
-        return send(chat.id, t(lang, "ENTER_PASSWORD"));
-      }
-      if (loginStep.step === "password") {
-        await deleteLoginState(kv, chatId);
-        const email    = loginStep.username;
-        const password = text;
-        try {
-          const { data: blocked } = await supabase.from("blocked_users").select("id").eq("email", email).maybeSingle();
-          if (blocked) return send(chat.id, t(lang, "BLOCKED"));
+    if (isPrivate) {
+      // --- مدیریت مرحله‌ای ورود ---
+      const loginStep = await getLoginState(kv, chatId);
+      if (loginStep) {
+        if (loginStep.step === "username") {
+          await setLoginState(kv, chatId, { step: "password", username: text });
+          return send(chat.id, t(lang, "ENTER_PASSWORD"));
+        }
+        if (loginStep.step === "password") {
+          await deleteLoginState(kv, chatId);
+          const email    = loginStep.username;
+          const password = text;
+          try {
+            const { data: blocked } = await supabase.from("blocked_users").select("id").eq("email", email).maybeSingle();
+            if (blocked) return send(chat.id, t(lang, "BLOCKED"));
 
-          const authRes = await fetch(`${env.SUPABASE_URL}/auth/v1/token?grant_type=password`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "apikey": env.SUPABASE_SERVICE_KEY || env.SUPABASE_KEY,
-            },
-            body: JSON.stringify({ email, password }),
-          });
-          const authData = await authRes.json();
-          if (!authRes.ok || !authData?.access_token) {
-            return send(chat.id, t(lang, "LOGIN_ERROR"));
+            const authRes = await fetch(`${env.SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "apikey": env.SUPABASE_SERVICE_KEY || env.SUPABASE_KEY,
+              },
+              body: JSON.stringify({ email, password }),
+            });
+            const authData = await authRes.json();
+            if (!authRes.ok || !authData?.access_token) {
+              return send(chat.id, t(lang, "LOGIN_ERROR"));
+            }
+            const userId = authData?.user?.id;
+            if (!userId) return send(chat.id, t(lang, "LOGIN_ID_ERROR"));
+            const { data: dbUser } = await supabase.from("users").select("username, email").eq("id", userId).maybeSingle();
+            const username = dbUser?.username || email;
+            await setSession(kv, chatId, { userId, username, email });
+            return send(chat.id, t(lang, "LOGIN_OK", username), { reply_markup: buildMainMenuMarkup(lang, { username }) });
+          } catch (err) {
+            console.error("LOGIN ERROR:", err.message);
+            return send(chat.id, t(lang, "LOGIN_ID_ERROR"));
           }
-          const userId = authData?.user?.id;
-          if (!userId) return send(chat.id, t(lang, "LOGIN_ID_ERROR"));
-          const { data: dbUser } = await supabase.from("users").select("username, email").eq("id", userId).maybeSingle();
-          const username = dbUser?.username || email;
-          await setSession(kv, chatId, { userId, username, email });
-          return send(chat.id, t(lang, "LOGIN_OK", username), { reply_markup: buildMainMenuMarkup(lang, { username }) });
-        } catch (err) {
-          console.error("LOGIN ERROR:", err.message);
-          return send(chat.id, t(lang, "LOGIN_ID_ERROR"));
         }
       }
-    }
 
-    // --- جست‌وجوی متنی (private) ---
-    try {
-      const results = await searchAllSources(supabase, text);
-      if (!results.length) return send(chat.id, t(lang, "NOT_FOUND"), { reply_markup: mainMenu });
-      for (const m of results) {
-        try {
-          await sendSearchResult(BOT_TOKEN, chat.id, m, lang, BOT_USERNAME, SEND_SECRET, false);
-        } catch (e) {
-          console.error("PRIVATE SEARCH ITEM ERROR:", e.message, JSON.stringify(m));
+      // --- جست‌وجوی متنی (private) ---
+      try {
+        const results = await searchAllSources(supabase, text);
+        if (!results.length) return send(chat.id, t(lang, "NOT_FOUND"), { reply_markup: mainMenu });
+        for (const m of results) {
+          try {
+            await sendSearchResult(BOT_TOKEN, chat.id, m, lang, BOT_USERNAME, SEND_SECRET, false);
+          } catch (e) {
+            console.error("PRIVATE SEARCH ITEM ERROR:", e.message, JSON.stringify(m));
+          }
         }
+        await send(chat.id, "─────────────", { reply_markup: mainMenu });
+      } catch (err) {
+        console.error("PRIVATE SEARCH ERROR:", err.message);
+        await send(chat.id, t(lang, "ERROR_RETRY"), { reply_markup: mainMenu });
       }
-      await send(chat.id, "─────────────", { reply_markup: mainMenu });
-    } catch (err) {
-      console.error("PRIVATE SEARCH ERROR:", err.message);
-      await send(chat.id, t(lang, "ERROR_RETRY"), { reply_markup: mainMenu });
+      return;
     }
-    return;
   }
 
   // ===================================================
@@ -1378,6 +1419,29 @@ async function handleUpdate(update, env) {
       }
     } catch (err) {
       console.error("GROUP SEARCH ERROR:", err.message);
+    }
+    return;
+  }
+
+  // /send_all_<token> - ارسال همه‌ی اپیزودهای یک کالکشن/سریال داخل گروه
+  if (/^\/send(@\w+)?_all_/i.test(text)) {
+    const token   = text.replace(/^\/send(@\w+)?_all_/i, "").replace(/@\w+$/i, "").trim();
+    const payload = decodeSendToken(token, SEND_SECRET);
+    if (!payload || !payload.startsWith("all_")) return send(chat.id, t(lang, "INVALID_CMD"));
+    const movieId = payload.slice(4);
+    try {
+      const episodes = await fetchMovieEpisodes(supabase, movieId);
+      if (!episodes.length) return send(chat.id, t(lang, "NO_EPISODES"));
+      for (const episode of episodes) {
+        const epPayload = buildForwardPayloadFromChannelLink(episode.link);
+        if (epPayload) {
+          await copyPayloadMessage(BOT_TOKEN, chat.id, epPayload);
+          // تاخیر کوتاه بین ارسال‌ها تا flood control تلگرام
+          await new Promise(r => setTimeout(r, 300));
+        }
+      }
+    } catch (err) {
+      console.error("SEND ALL ERROR:", err.message);
     }
     return;
   }
