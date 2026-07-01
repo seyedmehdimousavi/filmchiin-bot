@@ -1006,22 +1006,29 @@ async function handleUpdate(update, env) {
       const movieId = allMatch[1];
       const episodes = await fetchMovieEpisodes(supabase, movieId);
       if (!episodes.length) return send(chat.id, t(lang, "NO_EPISODES"));
+      let sentCount = 0;
       for (const episode of episodes) {
         const payload = buildForwardPayloadFromChannelLink(episode.link);
-        if (payload) {
-          await copyPayloadMessage(BOT_TOKEN, chat.id, payload);
-          // تاخیر کوتاه بین ارسال‌ها تا flood control تلگرام
-          await new Promise(r => setTimeout(r, 300));
+        if (!payload) {
+          console.warn(`ALL_EPISODES: no payload for episode idx=${episode._episodeIndex} src=${episode._src} id=${episode.id} link=${episode.link}`);
+          continue;
         }
+        const result = await copyPayloadMessage(BOT_TOKEN, chat.id, payload);
+        if (result?.ok) sentCount++;
+        else console.error(`ALL_EPISODES: copyMessage failed for episode idx=${episode._episodeIndex}`, result?.description);
+        // تاخیر کوتاه بین ارسال‌ها تا flood control تلگرام
+        await new Promise(r => setTimeout(r, 300));
       }
+      if (sentCount === 0) return send(chat.id, t(lang, "NO_EPISODES"));
       return;
     }
 
     // m:<id>  یا  mi:<id> (movie_items)
-    const mMatch = data.match(/^(m|mi):(\d+)$/);
+    // توجه: movies از UUID استفاده می‌کنه (مثل df663fdd-...) و movie_items از عدد صحیح
+    const mMatch = data.match(/^(m|mi):([\w-]+)$/);
     if (mMatch) {
       const table = mMatch[1] === "mi" ? "movie_items" : "movies";
-      const id    = Number(mMatch[2]);
+      const id    = mMatch[2]; // نگه‌داشتن به‌عنوان string؛ Supabase coercion رو خودش مدیریت می‌کنه
       let movie = null;
       // اول جدول مشخص‌شده رو چک کن
       const { data: row1 } = await supabase.from(table).select("id, title, cover, link").eq("id", id).maybeSingle();
