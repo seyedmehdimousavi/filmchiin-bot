@@ -286,6 +286,14 @@ function shortenText(text, max = 120) {
   return text.substring(0, max) + "…";
 }
 
+// تشخیص اینکه آیا کیف‌پول از نوع TON است (برای نمایش دکمه «باز کردن در تون‌کیپر»)
+// دقیقاً همون منطقی که سایت (isTonWalletAddress در script.js) استفاده می‌کنه.
+function isTonWalletAddress(name, address) {
+  const n = (name || "").toLowerCase();
+  if (n.includes("ton")) return true;
+  return /^(EQ|UQ|kQ|0Q)[A-Za-z0-9_-]{46}$/.test((address || "").trim());
+}
+
 function normalizeCover(cover) {
   if (!cover || cover === "#") return undefined;
   return cover;
@@ -670,7 +678,7 @@ async function buildNotificationPayload(movie, botUsername, includeSend, secret)
     captionLines.push("", `/send_${token}`);
   }
   return {
-    photo: normalizeCover(movie.cover),
+    photo: resizeCoverUrl(normalizeCover(movie.cover)) || normalizeCover(movie.cover),
     caption: captionLines.join("\n"),
     reply_markup: {
       inline_keyboard: [[{ text: "▶️ Go to file", url: `https://t.me/${botUsername}?start=${payload}` }]],
@@ -779,6 +787,54 @@ async function getSession(kv, chatId) {
 async function setSession(kv, chatId, session) {
   if (!kv) return;
   await kv.put(`session:${chatId}`, JSON.stringify(session), { expirationTtl: 86400 * 7 });
+}
+
+// ===================================================
+// کلاینت Supabase احراز‌هویت‌شده برای هر کاربر
+// دقیقاً مثل سایت که با سشن Supabase Auth کاربر لاگین‌شده کار می‌کنه؛
+// این باعث می‌شه سیاست‌های RLS (مثلاً روی جدول favorites) که بر اساس
+// auth.uid() نوشته شدن، برای ربات هم درست کار کنن.
+// اگه access token منقضی شده باشه، با refresh_token تمدید می‌شه و
+// سشن ذخیره‌شده در KV آپدیت می‌شه.
+// ===================================================
+async function getAuthedSupabaseForSession(env, kv, chatId, session) {
+  if (!session?.access_token) {
+    // سشن قدیمی (بدون توکن) - فقط با کلاینت معمولی برگردون
+    return createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_KEY || env.SUPABASE_KEY);
+  }
+
+  let accessToken = session.access_token;
+  const isExpired = session.expires_at && Date.now() / 1000 >= Number(session.expires_at) - 30;
+
+  if (isExpired && session.refresh_token) {
+    try {
+      const refreshRes = await fetch(`${env.SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "apikey": env.SUPABASE_KEY,
+        },
+        body: JSON.stringify({ refresh_token: session.refresh_token }),
+      });
+      const refreshData = await refreshRes.json();
+      if (refreshRes.ok && refreshData?.access_token) {
+        accessToken = refreshData.access_token;
+        const newSession = {
+          ...session,
+          access_token: refreshData.access_token,
+          refresh_token: refreshData.refresh_token || session.refresh_token,
+          expires_at: refreshData.expires_at,
+        };
+        await setSession(kv, chatId, newSession);
+      }
+    } catch (err) {
+      console.error("REFRESH TOKEN ERROR:", err.message);
+    }
+  }
+
+  return createClient(env.SUPABASE_URL, env.SUPABASE_KEY, {
+    global: { headers: { Authorization: `Bearer ${accessToken}` } },
+  });
 }
 
 // ===================================================
@@ -1350,20 +1406,46 @@ async function handleUpdate(update, env) {
     }
 
     // --- حمایت از ما ---
+    // آدرس‌های کیف‌پول دقیقاً از همون جدول "wallets" که سایت استفاده می‌کنه
+    // خونده می‌شن؛ هر تغییری که در سایت (پنل ادمین) داده بشه، همینجا هم
+    // به‌صورت خودکار اعمال می‌شه.
     if (text === t(lang, "BTN_DONATE")) {
-      const donateMsg  = t(lang, "DONATE_MSG");
-      const donateAddr = t(lang, "DONATE_ADDR");
-      return send(chat.id, `${donateMsg}\n\`${donateAddr}\``, {
-        parse_mode: "Markdown",
-        reply_markup: {
-          inline_keyboard: [[
-            {
-              text: t(lang, "DONATE_OPEN_TONKEEPER_BTN"),
-              url: `https://app.tonkeeper.com/transfer/${donateAddr}`,
-            },
-          ]],
-        },
-      });
+      const donateMsg = t(lang, "DONATE_MSG");
+      try {
+        const { data: wallets, error: walletErr } = await supabase
+          .from("wallets")
+          .select("name, address")
+          .order("created_at", { ascending: true });
+
+        if (walletErr || !wallets || !wallets.length) {
+          return send(chat.id, donateMsg, { parse_mode: "Markdown" });
+        }
+
+        const lines = [donateMsg, ""];
+        const buttons = [];
+        for (const w of wallets) {
+          const name    = w.name || "";
+          const address = w.address || "";
+          if (!address) continue;
+          lines.push(`*${name}:*\n\`${address}\``);
+          if (isTonWalletAddress(name, address)) {
+            buttons.push([
+              {
+                text: `🔓 ${name ? name + " - " : ""}${t(lang, "DONATE_OPEN_TONKEEPER_BTN")}`,
+                url: `https://app.tonkeeper.com/transfer/${address}`,
+              },
+            ]);
+          }
+        }
+
+        return send(chat.id, lines.join("\n\n"), {
+          parse_mode: "Markdown",
+          reply_markup: buttons.length ? { inline_keyboard: buttons } : undefined,
+        });
+      } catch (err) {
+        console.error("DONATE HANDLER ERROR:", err.message);
+        return send(chat.id, donateMsg, { parse_mode: "Markdown" });
+      }
     }
 
     // --- علاقه‌مندی‌ها (فقط چت خصوصی) ---
@@ -1371,7 +1453,10 @@ async function handleUpdate(update, env) {
       if (!session) {
         return send(chat.id, t(lang, "LOGIN_REQUIRED"), { reply_markup: mainMenu });
       }
-      const { data: favs, error: favErr } = await supabase
+      // با کلاینت احرازهویت‌شده‌ی خود کاربر می‌خونیم؛ دقیقاً مثل سایت،
+      // تا سیاست‌های RLS جدول favorites به‌درستی اعمال بشن.
+      const userSupabase = await getAuthedSupabaseForSession(env, kv, chatId, session);
+      const { data: favs, error: favErr } = await userSupabase
         .from("favorites")
         .select("movie_id, created_at")
         .eq("user_id", session.userId)
@@ -1417,7 +1502,14 @@ async function handleUpdate(update, env) {
             if (!userId) return send(chat.id, t(lang, "LOGIN_ID_ERROR"));
             const { data: dbUser } = await supabase.from("users").select("username, email").eq("id", userId).maybeSingle();
             const username = dbUser?.username || email;
-            await setSession(kv, chatId, { userId, username, email });
+            await setSession(kv, chatId, {
+              userId,
+              username,
+              email,
+              access_token: authData.access_token,
+              refresh_token: authData.refresh_token,
+              expires_at: authData.expires_at,
+            });
             return send(chat.id, t(lang, "LOGIN_OK", username), { reply_markup: buildMainMenuMarkup(lang, { username }) });
           } catch (err) {
             console.error("LOGIN ERROR:", err.message);
